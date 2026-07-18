@@ -1,0 +1,8 @@
+filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
+filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
+github.com/go-sql-driver/mysql v1.10.0 h1:Q+1LV8DkHJvSYAdR83XzuhDaTykuDx0l6fkXxoWCWfw=
+github.com/go-sql-driver/mysql v1.10.0/go.mod h1:M+cqaI7+xxXGG9swrdeUIoPG3Y3KCkF0pZej+SK+nWk=
+github.com/k4k3ru-hub/storage/go/api v0.0.0-20260718145332-6d5ecfd688b0 h1:LejaIFwONAj7T4obbl5Dqe2guhm8SzsnfHEvptxxQVY=
+github.com/k4k3ru-hub/storage/go/api v0.0.0-20260718145332-6d5ecfd688b0/go.mod h1:a3cyH/2t6pJzOTw/ZUASVhc5LU4aVEFvDCuvM9k3BwU=
+github.com/k4k3ru-hub/storage/go/internal v0.0.0-20260718145332-6d5ecfd688b0 h1:NgjyIz3NPDi8zxgEXZMiLtXyOwYSFKxzaUGENyk/lKU=
+github.com/k4k3ru-hub/storage/go/internal v0.0.0-20260718145332-6d5ecfd688b0/go.mod h1:OikyhkjMCD4D4gacjtGJmCFS7Qlfv0RBAfVebSjfMmE=
