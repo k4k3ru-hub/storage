@@ -232,8 +232,8 @@ func (s *SecretStore) CreateTable(executor k4k3ruAPI.Executor) error {
             %s VARCHAR(128) NULL COMMENT 'AAD',
             PRIMARY KEY (%s),
             UNIQUE KEY uk_name (%s),
-            KEY idx_provider_id (%s);
-        `,
+            KEY idx_provider_id (%s)
+        );`,
         s.tableName,
         ColID,
         ColName,
