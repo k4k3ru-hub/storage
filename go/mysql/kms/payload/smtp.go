@@ -13,10 +13,14 @@ import (
 // SMTP payload.
 //
 type SMTP struct {
-    Host     string `json:"host,omitempty"`
-    Port     int    `json:"port,omitempty"`
-    Username string `json:"username,omitempty"`
-    Password string `json:"password,omitempty"`
+    Host       string `json:"host,omitempty"`
+    Port       int    `json:"port,omitempty"`
+    Username   string `json:"username,omitempty"`
+    Password   string `json:"password,omitempty"`
+    AuthMethod string `json:"authMethod,omitempty"`
+    Security   string `json:"security,omitempty"`
+    FromName   string `json:"fromName,omitempty"`
+    FromEmail  string `json:"fromEmail,omitempty"`
 }
 
 
