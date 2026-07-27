@@ -451,6 +451,62 @@ func (s *UsageCreditStore) Insert(ctx context.Context, executor k4k3ruAPI.Execut
 }
 
 //
+// Select usage credit by ID.
+//
+// Version:
+//   - 2026-07-27: Added.
+//
+func (s *UsageCreditStore) SelectByID(ctx context.Context, executor k4k3ruAPI.Executor, id uint64) (*UsageCredit, error) {
+    operationErr := errors.New("failed to select usage credit by id")
+
+    // Guard.
+    if s == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
+    }
+    if s.tableName == "" {
+        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
+    }
+    if ctx == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
+    }
+    if executor == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
+    }
+
+    // Validate.
+    if err := ValidateUsageCreditID(id); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    // Generate SELECT query.
+    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? LIMIT 1;", s.tableName, ColID)
+
+    // Execute query.
+    row := executor.QueryRowContext(ctx, query, id)
+
+    // Scan.
+    result := &UsageCredit{}
+    if err := row.Scan(
+        &result.ID,
+        &result.AccountID,
+        &result.Type,
+        &result.BalanceTicks,
+        &result.ExpiresAt,
+        &result.Description,
+        &result.MetaData,
+        &result.CreatedAt,
+        &result.UpdatedAt,
+    ); err != nil {
+        if errors.Is(err, sql.ErrNoRows) {
+            return nil, nil
+        }
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    return result, nil
+}
+
+//
 // Select usage credit by account ID and expires at.
 //
 // Version:
