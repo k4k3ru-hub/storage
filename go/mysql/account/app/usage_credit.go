@@ -548,8 +548,8 @@ func (s *UsageCreditStore) SelectActiveForUpdateByAccountID(ctx context.Context,
 
     // Generate SELECT query.
     query := fmt.Sprintf(
-        "SELECT * FROM %s WHERE %s = ? AND (%s IS NULL OR %s > ?) ORDER BY %s IS NULL, %s FOR UPDATE;",
-        s.tableName, ColAccountID, ColExpiresAt, ColExpiresAt, ColExpiresAt, ColExpiresAt,
+        "SELECT * FROM %s WHERE %s = ? AND (%s IS NULL OR %s > ?) AND %s > 0 ORDER BY %s IS NULL, %s FOR UPDATE;",
+        s.tableName, ColAccountID, ColExpiresAt, ColExpiresAt, ColBalanceTicks, ColExpiresAt, ColExpiresAt,
     )
 
     // Execute query.
