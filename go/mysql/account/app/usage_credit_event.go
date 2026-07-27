@@ -5,6 +5,7 @@ package app
 
 import (
     "context"
+    "database/sql"
     "database/sql/driver"
     "errors"
     "fmt"
@@ -554,6 +555,9 @@ func (s *UsageCreditEventStore) SelectByAccountIDAndCreditID(ctx context.Context
             &row.MetaData,
             &row.CreatedAt,
         ); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                continue
+            }
             return nil, fmt.Errorf("%w: %w", operationErr, err)
         }
 

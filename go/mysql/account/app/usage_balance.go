@@ -342,7 +342,7 @@ func (s *UsageBalanceStore) Insert(ctx context.Context, executor k4k3ruAPI.Execu
 // Version:
 //   - 2026-07-27: Added.
 //
-func (s *UsageBalanceStore) SelectByName(ctx context.Context, executor k4k3ruAPI.Executor, accountID uint64) (*UsageBalance, error) {
+func (s *UsageBalanceStore) SelectByAccountID(ctx context.Context, executor k4k3ruAPI.Executor, accountID uint64) (*UsageBalance, error) {
     operationErr := errors.New("failed to select usage balance by account id")
 
     // Guard.
@@ -381,6 +381,59 @@ func (s *UsageBalanceStore) SelectByName(ctx context.Context, executor k4k3ruAPI
         &result.UpdatedAt,
     ); err != nil {
         if err == sql.ErrNoRows {
+            return nil, nil
+        }
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    return result, nil
+}
+
+//
+// Select usage balance for update by account ID.
+//
+// Version:
+//   - 2026-07-27: Added.
+//
+func (s *UsageBalanceStore) SelectForUpdateByAccountID(ctx context.Context, tx *sql.Tx, accountID uint64) (*UsageBalance, error) {
+    operationErr := errors.New("failed to select usage balance for update by account id")
+
+    // Guard.
+    if s == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: usage_balance_store=null", operationErr)
+    }
+    if s.tableName == "" {
+        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
+    }
+    if ctx == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
+    }
+    if tx == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
+    }
+
+    // Validate account ID.
+    if err := ValidateUsageBalanceAccountID(accountID); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    // Generate SELECT query.
+    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? LIMIT 1 FOR UPDATE;", s.tableName, ColAccountID)
+
+    // Execute query.
+    row := tx.QueryRowContext(ctx, query, accountID)
+
+    // Scan.
+    result := &UsageBalance{}
+    if err := row.Scan(
+        &result.AccountID,
+        &result.Status,
+        &result.BalanceTicks,
+        &result.MetaData,
+        &result.CreatedAt,
+        &result.UpdatedAt,
+    ); err != nil {
+        if errors.Is(err, sql.ErrNoRows) {
             return nil, nil
         }
         return nil, fmt.Errorf("%w: %w", operationErr, err)

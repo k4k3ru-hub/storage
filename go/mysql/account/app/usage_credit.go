@@ -5,6 +5,7 @@ package app
 
 import (
     "context"
+    "database/sql"
     "database/sql/driver"
     "errors"
     "fmt"
@@ -498,6 +499,82 @@ func (s *UsageCreditStore) SelectByAccountIDAndExpiresAt(ctx context.Context, ex
             &row.CreatedAt,
             &row.UpdatedAt,
         ); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                continue
+            }
+            return nil, fmt.Errorf("%w: %w", operationErr, err)
+        }
+
+        result = append(result, row)
+    }
+
+    if err := rows.Err(); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    return result, nil
+}
+
+//
+// Select usage credit for update by account ID and expires at.
+//
+// Version:
+//   - 2026-07-27: Added.
+//
+func (s *UsageCreditStore) SelectForUpdateByAccountIDAndExpiresAt(ctx context.Context, tx *sql.Tx, accountID uint64, expiresAt time.Time) ([]*UsageCredit, error) {
+    operationErr := errors.New("failed to select usage credit by account id and expires at")
+
+    // Guard.
+    if s == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
+    }
+    if s.tableName == "" {
+        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
+    }
+    if ctx == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
+    }
+    if tx == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: sql_tx=null", operationErr)
+    }
+
+    // Validate.
+    if err := ValidateUsageCreditAccountID(accountID); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+    if err := ValidateUsageCreditExpiresAt(&expiresAt); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    // Generate SELECT query.
+    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? AND %s = ? FOR UPDATE;", s.tableName, ColAccountID, ColExpiresAt)
+
+    // Execute query.
+    rows, err := tx.QueryContext(ctx, query, accountID, expiresAt)
+    if err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    defer rows.Close()
+
+    // Scan.
+    var result []*UsageCredit
+    for rows.Next() {
+        row := &UsageCredit{}
+        if err := rows.Scan(
+            &row.ID,
+            &row.AccountID,
+            &row.Type,
+            &row.BalanceTicks,
+            &row.ExpiresAt,
+            &row.Description,
+            &row.MetaData,
+            &row.CreatedAt,
+            &row.UpdatedAt,
+        ); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                continue
+            }
             return nil, fmt.Errorf("%w: %w", operationErr, err)
         }
 
