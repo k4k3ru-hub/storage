@@ -345,7 +345,7 @@ func (s *UsageCreditEventStore) CreateTable(ctx context.Context, executor k4k3ru
             %s TEXT NULL COMMENT 'Meta data',
             %s DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Created at',
             PRIMARY KEY (%s),
-            KEY idx_%s_operation (%s),
+            KEY idx_%s_account_operation (%s, %s),
             KEY idx_%s_account_credit (%s, %s),
             KEY idx_%s_credit_account (%s, %s),
             CONSTRAINT fk_%s_credit_id FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE CASCADE ON UPDATE RESTRICT
@@ -361,7 +361,7 @@ func (s *UsageCreditEventStore) CreateTable(ctx context.Context, executor k4k3ru
         ColMetaData,
         ColCreatedAt,
         ColID,
-        s.tableName, ColOperationID,
+        s.tableName, ColAccountID, ColOperationID,
         s.tableName, ColAccountID, ColCreditID,
         s.tableName, ColCreditID, ColAccountID,
         s.tableName, ColCreditID, s.creditTableName, ColID,
@@ -496,6 +496,79 @@ func (s *UsageCreditEventStore) Insert(ctx context.Context, executor k4k3ruAPI.E
     }
 
     return nil
+}
+
+//
+// Select usage credit event by account ID and operation ID.
+//
+// Version:
+//   - 2026-07-27: Added.
+//
+func (s *UsageCreditEventStore) SelectByAccountIDAndOperationID(ctx context.Context, executor k4k3ruAPI.Executor, accountID, operationID uint64) ([]*UsageCreditEvent, error) {
+    operationErr := errors.New("failed to select usage credit event by account id and operation id")
+
+    // Guard.
+    if s == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: usage_credit_event_store=null", operationErr)
+    }
+    if s.tableName == "" {
+        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
+    }
+    if ctx == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
+    }
+    if executor == nil {
+        return nil, fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
+    }
+
+    // Validate.
+    if err := ValidateUsageCreditEventAccountID(accountID); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+    if err := ValidateUsageCreditEventOperationID(operationID); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    // Generate SELECT query.
+    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? AND %s = ?;", s.tableName, ColAccountID, ColOperationID)
+
+    // Execute query.
+    rows, err := executor.QueryContext(ctx, query, accountID, operationID)
+    if err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    defer rows.Close()
+
+    // Scan.
+    var result []*UsageCreditEvent
+    for rows.Next() {
+        row := &UsageCreditEvent{}
+        if err := rows.Scan(
+            &row.ID,
+            &row.OperationID,
+            &row.AccountID,
+            &row.CreditID,
+            &row.Type,
+            &row.DeltaTicks,
+            &row.Description,
+            &row.MetaData,
+            &row.CreatedAt,
+        ); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                continue
+            }
+            return nil, fmt.Errorf("%w: %w", operationErr, err)
+        }
+
+        result = append(result, row)
+    }
+
+    if err := rows.Err(); err != nil {
+        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    return result, nil
 }
 
 //
