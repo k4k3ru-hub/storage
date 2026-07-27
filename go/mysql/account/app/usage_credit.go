@@ -66,6 +66,14 @@ type UsageCreditInsertParams struct {
     Ignore       bool
 }
 
+type UsageCreditUpdateParams struct {
+    BalanceTicks       *uint64
+    Description        *string
+    MetaData           *string
+    SetNullDescription bool
+    SetNullMetaData    bool
+}
+
 
 //
 // Generate usage credit ID.
@@ -592,6 +600,54 @@ func (s *UsageCreditStore) SelectActiveForUpdateByAccountID(ctx context.Context,
 }
 
 //
+// Update usage credit by ID.
+//
+// Version:
+//   - 2026-07-27: Added.
+//
+func (s *UsageCreditStore) UpdateByID(ctx context.Context, executor k4k3ruAPI.Executor, params UsageCreditUpdateParams, id uint64) error {
+    operationErr := errors.New("failed to update usage credit by id")
+
+    // Guard.
+    if s == nil {
+        return fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
+    }
+    if s.tableName == "" {
+        return fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
+    }
+    if ctx == nil {
+        return fmt.Errorf("%w: invalid parameter: context=null", operationErr)
+    }
+    if executor == nil {
+        return fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
+    }
+
+    // Validate params.
+    if err := params.Validate(); err != nil {
+        return fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    // Build assignments.
+    assignments, args := params.BuildAssignments()
+    if len(assignments) == 0 {
+        return fmt.Errorf("%w: invalid parameter: assignments=empty", operationErr)
+    }
+
+    args = append(args, id)
+
+    // Generate UPDATE query.
+    query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?;", s.tableName, strings.Join(assignments, ", "), ColID)
+
+    // Execute query.
+    if _, err := executor.ExecContext(ctx, query, args...); err != nil {
+        return fmt.Errorf("%w: %w", operationErr, err)
+    }
+
+    return nil
+
+}
+
+//
 // Check whether usage credit type is valid.
 //
 // Version:
@@ -689,6 +745,58 @@ func (p *UsageCreditInsertParams) Validate() error {
     }
     if err := ValidateUsageCreditMetaData(p.MetaData); err != nil {
         return err
+    }
+    return nil
+}
+
+//  
+// Build UPDATE assignments and args.
+//  
+// Version:
+//   - 2025-07-27: Added.
+//
+func (p UsageCreditUpdateParams) BuildAssignments() ([]string, []any) {
+    assignments := make([]string, 0, 3)
+    args := make([]any, 0, 6)
+    
+    if p.BalanceTicks != nil {
+        assignments = append(assignments, ColBalanceTicks+"=?")
+        args = append(args, *p.BalanceTicks)
+    }
+
+    if p.SetNullDescription {
+        assignments = append(assignments, ColDescription+"=NULL")
+    } else if p.Description != nil {
+        assignments = append(assignments, ColDescription+"=?")
+        args = append(args, *p.Description)
+    }   
+
+    if p.SetNullMetaData {
+        assignments = append(assignments, ColMetaData+"=NULL")
+    } else if p.MetaData != nil {
+        assignments = append(assignments, ColMetaData+"=?")
+        args = append(args, *p.MetaData)
+    }   
+    
+    return assignments, args
+}
+
+//
+// Validate usage credit update params.
+//
+// Version:
+//   - 2026-07-27: Added.
+//
+func (p UsageCreditUpdateParams) Validate() error {
+    if p.Description != nil {
+        if err := ValidateUsageCreditDescription(p.Description); err != nil {
+            return err
+        }
+    }
+    if p.MetaData != nil {
+        if err := ValidateUsageCreditMetaData(p.MetaData); err != nil {
+            return err
+        }
     }
     return nil
 }

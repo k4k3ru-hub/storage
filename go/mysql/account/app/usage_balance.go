@@ -409,7 +409,7 @@ func (s *UsageBalanceStore) SelectForUpdateByAccountID(ctx context.Context, tx *
         return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
     }
     if tx == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
+        return nil, fmt.Errorf("%w: invalid parameter: sql_tx=null", operationErr)
     }
 
     // Validate account ID.
@@ -667,10 +667,7 @@ func (p UsageBalanceUpdateParams) BuildAssignments() ([]string, []any) {
 // Version:
 //   - 2026-07-27: Added.
 //
-func (p *UsageBalanceUpdateParams) Validate() error {
-    if p == nil {
-        return fmt.Errorf("invalid parameter: usage_balance_update_params=null")
-    }
+func (p UsageBalanceUpdateParams) Validate() error {
     if p.Status != nil {
         if err := ValidateUsageBalanceStatus(*p.Status); err != nil {
             return err
