@@ -516,13 +516,13 @@ func (s *UsageCreditStore) SelectByAccountIDAndExpiresAt(ctx context.Context, ex
 }
 
 //
-// Select usage credit for update by account ID and expires at.
+// Select active usage credits for update by account ID.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
-func (s *UsageCreditStore) SelectForUpdateByAccountIDAndExpiresAt(ctx context.Context, tx *sql.Tx, accountID uint64, expiresAt time.Time) ([]*UsageCredit, error) {
-    operationErr := errors.New("failed to select usage credit by account id and expires at")
+func (s *UsageCreditStore) SelectActiveForUpdateByAccountID(ctx context.Context, tx *sql.Tx, accountID uint64, now time.Time) ([]*UsageCredit, error) {
+    operationErr := errors.New("failed to select active usage credits for update by account id")
 
     // Guard.
     if s == nil {
@@ -542,15 +542,15 @@ func (s *UsageCreditStore) SelectForUpdateByAccountIDAndExpiresAt(ctx context.Co
     if err := ValidateUsageCreditAccountID(accountID); err != nil {
         return nil, fmt.Errorf("%w: %w", operationErr, err)
     }
-    if err := ValidateUsageCreditExpiresAt(&expiresAt); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
+    if now.IsZero() {
+        return nil, fmt.Errorf("%w: now=empty", operationErr)
     }
 
     // Generate SELECT query.
-    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? AND %s = ? FOR UPDATE;", s.tableName, ColAccountID, ColExpiresAt)
+    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? AND (%s IS NULL OR %s > ?) FOR UPDATE;", s.tableName, ColAccountID, ColExpiresAt, ColExpiresAt)
 
     // Execute query.
-    rows, err := tx.QueryContext(ctx, query, accountID, expiresAt)
+    rows, err := tx.QueryContext(ctx, query, accountID, now)
     if err != nil {
         return nil, fmt.Errorf("%w: %w", operationErr, err)
     }
