@@ -342,8 +342,14 @@ func (s *SecretStore) Insert(executor k4k3ruAPI.Executor, params *SecretInsertPa
     }
 
     // Generate INSERT query.
+    queryPrefix := "INSERT"
+    if params.Ignore {
+        queryPrefix = "INSERT IGNORE"
+    }
+
     query := fmt.Sprintf(
-        "INSERT INTO %s (%s, %s, %s, %s, %s) VALUES (?, ?, ?, ?, ?);",
+        "%s INTO %s (%s, %s, %s, %s, %s) VALUES (?, ?, ?, ?, ?);",
+        queryPrefix,
         s.tableName,
         ColID,
         ColName,
@@ -367,7 +373,7 @@ func (s *SecretStore) Insert(executor k4k3ruAPI.Executor, params *SecretInsertPa
     ); err != nil {
         var mysqlErr *mysql.MySQLError
         if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
-            return fmt.Errorf("failed to insert account: %w", k4k3ruAPI.ErrDuplicateKey)
+            return fmt.Errorf("failed to insert account: %w: %w", k4k3ruAPI.ErrDuplicateKey, err)
         }
         return fmt.Errorf("failed to insert secret: %w", err)
     }
