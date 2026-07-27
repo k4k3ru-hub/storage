@@ -443,13 +443,13 @@ func (s *UsageBalanceStore) SelectForUpdateByAccountID(ctx context.Context, tx *
 }
 
 //
-// Update usage balance by ID.
+// Update usage balance by account ID.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
-func (s *UsageBalanceStore) UpdateByID(ctx context.Context, executor k4k3ruAPI.Executor, params UsageBalanceUpdateParams, id uint64) error {
-    operationErr := errors.New("failed to update usage balance by id")
+func (s *UsageBalanceStore) UpdateByAccountID(ctx context.Context, executor k4k3ruAPI.Executor, params UsageBalanceUpdateParams, accountID uint64) error {
+    operationErr := errors.New("failed to update usage balance by account id")
 
     // Guard.
     if s == nil {
@@ -464,8 +464,8 @@ func (s *UsageBalanceStore) UpdateByID(ctx context.Context, executor k4k3ruAPI.E
     if executor == nil {
         return fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
     }
-    if id == 0 {
-        return fmt.Errorf("%w: invalid parameter: id=0", operationErr)
+    if accountID == 0 {
+        return fmt.Errorf("%w: invalid parameter: account_id=0", operationErr)
     }
 
     // Validate params.
@@ -479,10 +479,10 @@ func (s *UsageBalanceStore) UpdateByID(ctx context.Context, executor k4k3ruAPI.E
         return fmt.Errorf("%w: invalid parameter: assignments=empty", operationErr)
     }
 
-    args = append(args, id)
+    args = append(args, accountID)
 
     // Generate UPDATE query.
-    query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?;", s.tableName, strings.Join(assignments, ", "), ColID)
+    query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?;", s.tableName, strings.Join(assignments, ", "), ColAccountID)
 
     // Execute query.
     if _, err := executor.ExecContext(ctx, query, args...); err != nil {
