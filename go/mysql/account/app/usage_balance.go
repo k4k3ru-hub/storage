@@ -78,7 +78,7 @@ type UsageBalanceUpdateParams struct {
 // Version:
 //   - 2026-07-26: Added.
 //
-func NewUsageBalanceStore(tableName, accountTableName string) (*UsageBalanceStore, error) {
+func NewUsageBalanceStore(tableName string) (*UsageBalanceStore, error) {
     operationErr := errors.New("failed to create account app usage balance store")
 
     // Guard.
