@@ -365,7 +365,6 @@ func (s *UsageCreditEventStore) CreateTable(ctx context.Context, executor k4k3ru
         s.tableName, ColAccountID, ColCreditID,
         s.tableName, ColCreditID, ColAccountID,
         s.tableName, ColCreditID, s.creditTableName, ColID,
-        s.tableName, ColExpiresAt, ColAccountID,
     )
 
     // Execute query.
@@ -661,6 +660,28 @@ func (t UsageCreditEventType) IsValid() bool {
         return true
     default:
         return false
+    }
+}
+
+//
+// Convert usage credit event type to string.
+//
+func (t UsageCreditEventType) String() string {
+    switch t {
+    case UsageCreditEventTypeGranted:
+        return "granted"
+    case UsageCreditEventTypeAPIRequestConsumed:
+        return "api-request-consumed"
+    case UsageCreditEventTypeSubscriptionConsumed:
+        return "subscription-consumed"
+    case UsageCreditEventTypeRefunded:
+        return "refunded"
+    case UsageCreditEventTypeExpired:
+        return "expired"
+    case UsageCreditEventTypeAdjusted:
+        return "adjusted"
+    default:
+        return ""
     }
 }
 
