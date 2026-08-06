@@ -4,298 +4,296 @@
 package app
 
 import (
-    "context"
-    "database/sql"
-    "database/sql/driver"
-    "errors"
-    "fmt"
-    "strings"
-    "time"
-    "unicode/utf8"
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
 
-    "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 
-    k4k3ruAPI               "github.com/k4k3ru-hub/storage/go/api"
-    k4k3ruInternalGenerator "github.com/k4k3ru-hub/storage/go/internal/generator"
-    k4k3ruInternalSQLScan   "github.com/k4k3ru-hub/storage/go/internal/sqlscan"
+	k4k3ruAPI "github.com/k4k3ru-hub/storage/go/api"
+	k4k3ruInternalGenerator "github.com/k4k3ru-hub/storage/go/internal/generator"
+	k4k3ruInternalSQLScan "github.com/k4k3ru-hub/storage/go/internal/sqlscan"
+	k4k3ruMySQLInternalValidator "github.com/k4k3ru-hub/storage/go/mysql/internal/validator"
 )
 
-
 const (
-    DefaultUsageCreditTableName = "account_app_usage_credits"
+	DefaultUsageCreditTableName = "account_app_usage_credits"
 )
 
 var (
-    usageCreditIDGenerator = &k4k3ruInternalGenerator.ID{}
+	usageCreditIDGenerator = &k4k3ruInternalGenerator.ID{}
 )
 
 type UsageCredit struct {
-    ID           uint64
-    AccountID    uint64
-    Type         UsageCreditType
-    BalanceTicks uint64
-    ExpiresAt    *time.Time
-    Description  *string
-    MetaData     *string
-    CreatedAt    time.Time
-    UpdatedAt    time.Time
+	ID           uint64
+	AccountID    uint64
+	Type         UsageCreditType
+	BalanceTicks uint64
+	ExpiresAt    *time.Time
+	Description  *string
+	MetaData     *string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type UsageCreditType uint8
 
 const (
-    UsageCreditTypePurchased UsageCreditType = iota + 1
-    UsageCreditTypeCampaign
-    UsageCreditTypeCompensation
-    UsageCreditTypeAdjustment
+	UsageCreditTypePurchased UsageCreditType = iota + 1
+	UsageCreditTypeCampaign
+	UsageCreditTypeCompensation
+	UsageCreditTypeAdjustment
 )
 
 type UsageCreditStore struct {
-    tableName string
+	tableName string
 }
 
 type UsageCreditInsertParams struct {
-    ID           uint64
-    AccountID    uint64
-    Type         UsageCreditType
-    BalanceTicks uint64
-    ExpiresAt    *time.Time
-    Description  *string
-    MetaData     *string
-    CreatedAt    time.Time
-    Ignore       bool
+	ID           uint64
+	AccountID    uint64
+	Type         UsageCreditType
+	BalanceTicks uint64
+	ExpiresAt    *time.Time
+	Description  *string
+	MetaData     *string
+	CreatedAt    time.Time
+	Ignore       bool
 }
 
 type UsageCreditUpdateParams struct {
-    BalanceTicks       *uint64
-    Description        *string
-    MetaData           *string
-    SetNullDescription bool
-    SetNullMetaData    bool
+	BalanceTicks       *uint64
+	Description        *string
+	MetaData           *string
+	SetNullDescription bool
+	SetNullMetaData    bool
 }
 
-
 //
-// Generate usage credit ID.
+// GenerateUsageCreditID generates a usage credit ID.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func GenerateUsageCreditID() uint64 {
-    return usageCreditIDGenerator.Generate()
+	return usageCreditIDGenerator.Generate()
 }
 
 //
-// Create new usage credit store.
+// NewUsageCreditStore creates a usage credit store.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func NewUsageCreditStore(tableName string) (*UsageCreditStore, error) {
-    operationErr := errors.New("failed to create account app usage credit store")
+	operationErr := "failed to create account app usage credit store"
 
-    // Guard.
-    tableName = strings.TrimSpace(tableName)
-    if tableName == "" {
-        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
+	// Guard.
+	tableName = strings.TrimSpace(tableName)
+	if err := k4k3ruMySQLInternalValidator.ValidateSQLIdentifier(tableName, "table_name"); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return &UsageCreditStore{
-        tableName: tableName,
-    }, nil
+	return &UsageCreditStore{
+		tableName: tableName,
+	}, nil
 }
 
 //
-// Validate usage credit ID.
+// ValidateUsageCreditID validates a usage credit ID.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func ValidateUsageCreditID(id uint64) error {
-    if id == 0 {
-        return fmt.Errorf("invalid parameter: id=0")
-    }
-    return nil
+	if id == 0 {
+		return fmt.Errorf("invalid parameter: id=0")
+	}
+	return nil
 }
 
 //
-// Validate usage credit ID.
+// ValidateID validates the usage credit ID.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (c *UsageCredit) ValidateID() error {
-    if c == nil {
-        return fmt.Errorf("invalid parameter: usage_credit=null")
-    }
-    return ValidateUsageCreditID(c.ID)
+	if c == nil {
+		return fmt.Errorf("invalid parameter: usage_credit=null")
+	}
+	return ValidateUsageCreditID(c.ID)
 }
 
 //
-// Validate usage credit account ID.
+// ValidateUsageCreditAccountID validates a usage credit account ID.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func ValidateUsageCreditAccountID(accountID uint64) error {
-    if accountID == 0 {
-        return fmt.Errorf("invalid parameter: account_id=0")
-    }
-    return nil
+	if accountID == 0 {
+		return fmt.Errorf("invalid parameter: account_id=0")
+	}
+	return nil
 }
 
 //
-// Validate usage credit account ID.
+// ValidateAccountID validates the usage credit account ID.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (c *UsageCredit) ValidateAccountID() error {
-    if c == nil {
-        return fmt.Errorf("invalid parameter: usage_credit=null")
-    }
-    return ValidateUsageCreditAccountID(c.AccountID)
+	if c == nil {
+		return fmt.Errorf("invalid parameter: usage_credit=null")
+	}
+	return ValidateUsageCreditAccountID(c.AccountID)
 }
 
 //
-// Validate usage credit type.
-// 
+// ValidateUsageCreditType validates a usage credit type.
+//
 // Version:
 //   - 2026-07-26: Added.
-// 
+//
 func ValidateUsageCreditType(t UsageCreditType) error {
-    if err := t.Validate(); err != nil {
-        return err
-    }
-    return nil
-}  
-
-//      
-// Validate usage credit type.
-// 
-// Version:
-//   - 2026-07-26: Added.
-// 
-func (e *UsageCredit) ValidateType() error {
-    if e == nil {
-        return fmt.Errorf("invalid parameter: usage_credit=null")
-    }
-    return ValidateUsageCreditType(e.Type)
+	if err := t.Validate(); err != nil {
+		return err
+	}
+	return nil
 }
 
 //
-// Validate usage credit expires at.
+// ValidateType validates the usage credit type.
+//
+// Version:
+//   - 2026-07-26: Added.
+//
+func (e *UsageCredit) ValidateType() error {
+	if e == nil {
+		return fmt.Errorf("invalid parameter: usage_credit=null")
+	}
+	return ValidateUsageCreditType(e.Type)
+}
+
+//
+// ValidateUsageCreditExpiresAt validates a usage credit expiration time.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func ValidateUsageCreditExpiresAt(expiresAt *time.Time) error {
-    if expiresAt == nil {
-        return nil
-    }
-    if (*expiresAt).IsZero() {
-        return fmt.Errorf("invalid parameter: expires_at=empty")
-    }
-    return nil
+	if expiresAt == nil {
+		return nil
+	}
+	if (*expiresAt).IsZero() {
+		return fmt.Errorf("invalid parameter: expires_at=empty")
+	}
+	return nil
 }
 
 //
-// Validate usage credit expires at.
+// ValidateCreditExpiresAt validates the usage credit expiration time.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (c *UsageCredit) ValidateCreditExpiresAt() error {
-    if c == nil {
-        return fmt.Errorf("invalid parameter: usage_credit=null")
-    }
-    return ValidateUsageCreditExpiresAt(c.ExpiresAt)
+	if c == nil {
+		return fmt.Errorf("invalid parameter: usage_credit=null")
+	}
+	return ValidateUsageCreditExpiresAt(c.ExpiresAt)
 }
 
 //
-// Validate usage credit description.
+// ValidateUsageCreditDescription validates a usage credit description.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func ValidateUsageCreditDescription(description *string) error {
-    if description == nil {
-        return nil
-    }
-    if utf8.RuneCountInString(*description) > 255 {
-        return fmt.Errorf("invalid parameter: description=too_long")
-    }
-    return nil
+	if description == nil {
+		return nil
+	}
+	if utf8.RuneCountInString(*description) > 255 {
+		return fmt.Errorf("invalid parameter: description=too_long")
+	}
+	return nil
 }
 
 //
-// Validate usage credit description.
+// ValidateDescription validates the usage credit description.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (e *UsageCredit) ValidateDescription() error {
-    if e == nil {
-        return fmt.Errorf("invalid parameter: usage_credit=null")
-    }
-    return ValidateUsageCreditDescription(e.Description)
+	if e == nil {
+		return fmt.Errorf("invalid parameter: usage_credit=null")
+	}
+	return ValidateUsageCreditDescription(e.Description)
 }
 
 //
-// Validate usage credit meta data.
+// ValidateUsageCreditMetaData validates usage credit metadata.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func ValidateUsageCreditMetaData(metaData *string) error {
-    if metaData == nil {
-        return nil
-    }
-    if len([]byte(*metaData)) > 4096 {
-        return fmt.Errorf("invalid parameter: meta_data=too_long")
-    }
-    return nil
+	if metaData == nil {
+		return nil
+	}
+	if len([]byte(*metaData)) > 4096 {
+		return fmt.Errorf("invalid parameter: meta_data=too_long")
+	}
+	return nil
 }
 
 //
-// Validate usage credit meta data.
+// ValidateMetaData validates the usage credit metadata.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (e *UsageCredit) ValidateMetaData() error {
-    if e == nil {
-        return fmt.Errorf("invalid parameter: usage_credit=null")
-    }
-    return ValidateUsageCreditMetaData(e.MetaData)
+	if e == nil {
+		return fmt.Errorf("invalid parameter: usage_credit=null")
+	}
+	return ValidateUsageCreditMetaData(e.MetaData)
 }
 
 //
-// Create usage credit table.
+// CreateTable creates the usage credit table.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (s *UsageCreditStore) CreateTable(ctx context.Context, executor k4k3ruAPI.Executor) error {
-    operationErr := errors.New("failed to create usage credit table")
+	operationErr := "failed to create usage credit table"
 
-    // Guard.
-    if s == nil {
-        return fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if executor == nil {
-        return fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
-    }
-
-    // Generate CREATE TABLE query.
-    query := fmt.Sprintf(
-        `CREATE TABLE IF NOT EXISTS %s (
+	// Guard.
+	if s == nil {
+		return fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if executor == nil {
+		return fmt.Errorf("%s: invalid parameter: executor=null", operationErr)
+	}
+	// Generate CREATE TABLE query.
+	query := fmt.Sprintf(
+		`CREATE TABLE IF NOT EXISTS %s (
             %s BIGINT UNSIGNED NOT NULL COMMENT 'ID',
             %s BIGINT UNSIGNED NOT NULL COMMENT 'Account ID',
             %s TINYINT UNSIGNED NOT NULL COMMENT 'Type',
@@ -309,550 +307,553 @@ func (s *UsageCreditStore) CreateTable(ctx context.Context, executor k4k3ruAPI.E
             KEY idx_%s_account_expires (%s, %s),
             KEY idx_%s_expires_account (%s, %s)
         ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4;`,
-        s.tableName,
-        ColID,
-        ColAccountID,
-        ColType,
-        ColBalanceTicks,
-        ColExpiresAt,
-        ColDescription,
-        ColMetaData,
-        ColCreatedAt,
-        ColUpdatedAt,
-        ColID,
-        s.tableName, ColAccountID, ColExpiresAt,
-        s.tableName, ColExpiresAt, ColAccountID,
-    )
+		s.tableName,
+		ColID,
+		ColAccountID,
+		ColType,
+		ColBalanceTicks,
+		ColExpiresAt,
+		ColDescription,
+		ColMetaData,
+		ColCreatedAt,
+		ColUpdatedAt,
+		ColID,
+		s.tableName, ColAccountID, ColExpiresAt,
+		s.tableName, ColExpiresAt, ColAccountID,
+	)
 
-    // Execute query.
-    if _, err := executor.ExecContext(ctx, query); err != nil {
-        return fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Execute query.
+	if _, err := executor.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return nil
+	return nil
 }
 
 //
-// Delete usage credit by ID.
+// DeleteByID deletes a usage credit by ID.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (s *UsageCreditStore) DeleteByID(ctx context.Context, executor k4k3ruAPI.Executor, id uint64) error {
-    operationErr := errors.New("failed to delete usage credit by id")
+	operationErr := "failed to delete usage credit by id"
 
-    // Guard.
-    if s == nil {
-        return fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if executor == nil {
-        return fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
-    }
-    if id == 0 {
-        return fmt.Errorf("%w: invalid parameter: id=0", operationErr)
-    }
+	// Guard.
+	if s == nil {
+		return fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if executor == nil {
+		return fmt.Errorf("%s: invalid parameter: executor=null", operationErr)
+	}
+	if id == 0 {
+		return fmt.Errorf("%s: invalid parameter: id=0", operationErr)
+	}
 
-    // Generate DELETE query.
-    query := fmt.Sprintf("DELETE FROM %s WHERE %s = ?;", s.tableName, ColID)
+	// Generate DELETE query.
+	query := fmt.Sprintf("DELETE FROM %s WHERE %s = ?;", s.tableName, ColID)
 
-    // Execute query.
-    if _, err := executor.ExecContext(ctx, query, id); err != nil {
-        return fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Execute query.
+	if _, err := executor.ExecContext(ctx, query, id); err != nil {
+		return fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return nil
+	return nil
 }
 
 //
-// Insert usage credit.
+// Insert inserts a usage credit.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (s *UsageCreditStore) Insert(ctx context.Context, executor k4k3ruAPI.Executor, params *UsageCreditInsertParams) error {
-    operationErr := errors.New("failed to insert usage credit")
+	operationErr := "failed to insert usage credit"
 
-    // Guard.
-    if s == nil {
-        return fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if executor == nil {
-        return fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
-    }
+	// Guard.
+	if s == nil {
+		return fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if executor == nil {
+		return fmt.Errorf("%s: invalid parameter: executor=null", operationErr)
+	}
+	if params == nil {
+		return fmt.Errorf("%s: invalid parameter: usage_credit_insert_params=null", operationErr)
+	}
 
-    // Apply defaults.
-    if params.ID == 0 {
-        params.ID = GenerateUsageCreditID()
-    }
+	// Apply defaults.
+	if params.ID == 0 {
+		params.ID = GenerateUsageCreditID()
+	}
 
-    now := time.Now().UTC()
-    if params.CreatedAt.IsZero() {
-        params.CreatedAt = now
-    }
+	now := time.Now().UTC()
+	if params.CreatedAt.IsZero() {
+		params.CreatedAt = now
+	}
 
-    // Validate params.
-    if err := params.Validate(); err != nil {
-        return fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Validate params.
+	if err := params.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    // Generate INSERT query.
-    queryPrefix := "INSERT"
-    if params.Ignore {
-        queryPrefix = "INSERT IGNORE"
-    }
+	// Generate INSERT query.
+	queryPrefix := "INSERT"
+	if params.Ignore {
+		queryPrefix = "INSERT IGNORE"
+	}
 
-    query := fmt.Sprintf(
-        "%s INTO %s (%s, %s, %s, %s, %s, %s, %s, %s) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-        queryPrefix,
-        s.tableName,
-        ColID,
-        ColAccountID,
-        ColType,
-        ColBalanceTicks,
-        ColExpiresAt,
-        ColDescription,
-        ColMetaData,
-        ColCreatedAt,
-    )
+	query := fmt.Sprintf(
+		"%s INTO %s (%s, %s, %s, %s, %s, %s, %s, %s) VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+		queryPrefix,
+		s.tableName,
+		ColID,
+		ColAccountID,
+		ColType,
+		ColBalanceTicks,
+		ColExpiresAt,
+		ColDescription,
+		ColMetaData,
+		ColCreatedAt,
+	)
 
-    // Execute query.
-    if _, err := executor.ExecContext(
-        ctx,
-        query,
-        params.ID,
-        params.AccountID,
-        params.Type,
-        params.BalanceTicks,
-        params.ExpiresAt,
-        params.Description,
-        params.MetaData,
-        params.CreatedAt,
-    ); err != nil {
-        var mysqlErr *mysql.MySQLError
-        if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
-            return fmt.Errorf("%w: %w: %w", operationErr, k4k3ruAPI.ErrDuplicateKey, err)
-        }
-        return fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Execute query.
+	if _, err := executor.ExecContext(
+		ctx,
+		query,
+		params.ID,
+		params.AccountID,
+		params.Type,
+		params.BalanceTicks,
+		params.ExpiresAt,
+		params.Description,
+		params.MetaData,
+		params.CreatedAt,
+	); err != nil {
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+			return fmt.Errorf("%s: %w: %w", operationErr, k4k3ruAPI.ErrDuplicateKey, err)
+		}
+		return fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return nil
+	return nil
 }
 
 //
-// Select usage credit by ID.
+// SelectByID selects a usage credit by ID.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (s *UsageCreditStore) SelectByID(ctx context.Context, executor k4k3ruAPI.Executor, id uint64) (*UsageCredit, error) {
-    operationErr := errors.New("failed to select usage credit by id")
+	operationErr := "failed to select usage credit by id"
 
-    // Guard.
-    if s == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if executor == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
-    }
+	// Guard.
+	if s == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return nil, fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if executor == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: executor=null", operationErr)
+	}
 
-    // Validate.
-    if err := ValidateUsageCreditID(id); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Validate.
+	if err := ValidateUsageCreditID(id); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    // Generate SELECT query.
-    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? LIMIT 1;", s.tableName, ColID)
+	// Generate SELECT query.
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? LIMIT 1;", s.tableName, ColID)
 
-    // Execute query.
-    row := executor.QueryRowContext(ctx, query, id)
+	// Execute query.
+	row := executor.QueryRowContext(ctx, query, id)
 
-    // Scan.
-    result := &UsageCredit{}
-    if err := row.Scan(
-        &result.ID,
-        &result.AccountID,
-        &result.Type,
-        &result.BalanceTicks,
-        &result.ExpiresAt,
-        &result.Description,
-        &result.MetaData,
-        &result.CreatedAt,
-        &result.UpdatedAt,
-    ); err != nil {
-        if errors.Is(err, sql.ErrNoRows) {
-            return nil, nil
-        }
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Scan.
+	result := &UsageCredit{}
+	if err := row.Scan(
+		&result.ID,
+		&result.AccountID,
+		&result.Type,
+		&result.BalanceTicks,
+		&result.ExpiresAt,
+		&result.Description,
+		&result.MetaData,
+		&result.CreatedAt,
+		&result.UpdatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return result, nil
+	return result, nil
 }
 
 //
-// Select usage credit by account ID and expires at.
+// SelectByAccountIDAndExpiresAt selects usage credits by account ID and expiration time.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (s *UsageCreditStore) SelectByAccountIDAndExpiresAt(ctx context.Context, executor k4k3ruAPI.Executor, accountID uint64, expiresAt time.Time) ([]*UsageCredit, error) {
-    operationErr := errors.New("failed to select usage credit by account id and expires at")
+	operationErr := "failed to select usage credit by account id and expires at"
 
-    // Guard.
-    if s == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if executor == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
-    }
+	// Guard.
+	if s == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return nil, fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if executor == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: executor=null", operationErr)
+	}
 
-    // Validate.
-    if err := ValidateUsageCreditAccountID(accountID); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
-    if err := ValidateUsageCreditExpiresAt(&expiresAt); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Validate.
+	if err := ValidateUsageCreditAccountID(accountID); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
+	if err := ValidateUsageCreditExpiresAt(&expiresAt); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    // Generate SELECT query.
-    query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? AND %s = ?;", s.tableName, ColAccountID, ColExpiresAt)
+	// Generate SELECT query.
+	query := fmt.Sprintf("SELECT * FROM %s WHERE %s = ? AND %s = ?;", s.tableName, ColAccountID, ColExpiresAt)
 
-    // Execute query.
-    rows, err := executor.QueryContext(ctx, query, accountID, expiresAt)
-    if err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Execute query.
+	rows, err := executor.QueryContext(ctx, query, accountID, expiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    defer rows.Close()
+	defer rows.Close()
 
-    // Scan.
-    var result []*UsageCredit
-    for rows.Next() {
-        row := &UsageCredit{}
-        if err := rows.Scan(
-            &row.ID,
-            &row.AccountID,
-            &row.Type,
-            &row.BalanceTicks,
-            &row.ExpiresAt,
-            &row.Description,
-            &row.MetaData,
-            &row.CreatedAt,
-            &row.UpdatedAt,
-        ); err != nil {
-            if errors.Is(err, sql.ErrNoRows) {
-                continue
-            }
-            return nil, fmt.Errorf("%w: %w", operationErr, err)
-        }
+	// Scan.
+	var result []*UsageCredit
+	for rows.Next() {
+		row := &UsageCredit{}
+		if err := rows.Scan(
+			&row.ID,
+			&row.AccountID,
+			&row.Type,
+			&row.BalanceTicks,
+			&row.ExpiresAt,
+			&row.Description,
+			&row.MetaData,
+			&row.CreatedAt,
+			&row.UpdatedAt,
+		); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, fmt.Errorf("%s: %w", operationErr, err)
+		}
 
-        result = append(result, row)
-    }
+		result = append(result, row)
+	}
 
-    if err := rows.Err(); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return result, nil
+	return result, nil
 }
 
 //
-// Select active usage credits for update by account ID.
+// SelectActiveForUpdateByAccountID selects active usage credits for update by account ID.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (s *UsageCreditStore) SelectActiveForUpdateByAccountID(ctx context.Context, tx *sql.Tx, accountID uint64, now time.Time) ([]*UsageCredit, error) {
-    operationErr := errors.New("failed to select active usage credits for update by account id")
+	operationErr := "failed to select active usage credits for update by account id"
 
-    // Guard.
-    if s == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return nil, fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if tx == nil {
-        return nil, fmt.Errorf("%w: invalid parameter: sql_tx=null", operationErr)
-    }
+	// Guard.
+	if s == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return nil, fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if tx == nil {
+		return nil, fmt.Errorf("%s: invalid parameter: sql_tx=null", operationErr)
+	}
 
-    // Validate.
-    if err := ValidateUsageCreditAccountID(accountID); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
-    if now.IsZero() {
-        return nil, fmt.Errorf("%w: now=empty", operationErr)
-    }
+	// Validate.
+	if err := ValidateUsageCreditAccountID(accountID); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
+	if now.IsZero() {
+		return nil, fmt.Errorf("%s: now=empty", operationErr)
+	}
 
-    // Generate SELECT query.
-    query := fmt.Sprintf(
-        "SELECT * FROM %s WHERE %s = ? AND (%s IS NULL OR %s > ?) AND %s > 0 ORDER BY %s IS NULL, %s FOR UPDATE;",
-        s.tableName, ColAccountID, ColExpiresAt, ColExpiresAt, ColBalanceTicks, ColExpiresAt, ColExpiresAt,
-    )
+	// Generate SELECT query.
+	query := fmt.Sprintf(
+		"SELECT * FROM %s WHERE %s = ? AND (%s IS NULL OR %s > ?) AND %s > 0 ORDER BY %s IS NULL, %s FOR UPDATE;",
+		s.tableName, ColAccountID, ColExpiresAt, ColExpiresAt, ColBalanceTicks, ColExpiresAt, ColExpiresAt,
+	)
 
-    // Execute query.
-    rows, err := tx.QueryContext(ctx, query, accountID, now)
-    if err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Execute query.
+	rows, err := tx.QueryContext(ctx, query, accountID, now)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    defer rows.Close()
+	defer rows.Close()
 
-    // Scan.
-    var result []*UsageCredit
-    for rows.Next() {
-        row := &UsageCredit{}
-        if err := rows.Scan(
-            &row.ID,
-            &row.AccountID,
-            &row.Type,
-            &row.BalanceTicks,
-            &row.ExpiresAt,
-            &row.Description,
-            &row.MetaData,
-            &row.CreatedAt,
-            &row.UpdatedAt,
-        ); err != nil {
-            if errors.Is(err, sql.ErrNoRows) {
-                continue
-            }
-            return nil, fmt.Errorf("%w: %w", operationErr, err)
-        }
+	// Scan.
+	var result []*UsageCredit
+	for rows.Next() {
+		row := &UsageCredit{}
+		if err := rows.Scan(
+			&row.ID,
+			&row.AccountID,
+			&row.Type,
+			&row.BalanceTicks,
+			&row.ExpiresAt,
+			&row.Description,
+			&row.MetaData,
+			&row.CreatedAt,
+			&row.UpdatedAt,
+		); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, fmt.Errorf("%s: %w", operationErr, err)
+		}
 
-        result = append(result, row)
-    }
+		result = append(result, row)
+	}
 
-    if err := rows.Err(); err != nil {
-        return nil, fmt.Errorf("%w: %w", operationErr, err)
-    }
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return result, nil
+	return result, nil
 }
 
 //
-// Update usage credit by ID.
+// UpdateByID updates a usage credit by ID.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (s *UsageCreditStore) UpdateByID(ctx context.Context, executor k4k3ruAPI.Executor, params UsageCreditUpdateParams, id uint64) error {
-    operationErr := errors.New("failed to update usage credit by id")
+	operationErr := "failed to update usage credit by id"
 
-    // Guard.
-    if s == nil {
-        return fmt.Errorf("%w: invalid parameter: usage_credit_store=null", operationErr)
-    }
-    if s.tableName == "" {
-        return fmt.Errorf("%w: invalid parameter: table_name=empty", operationErr)
-    }
-    if ctx == nil {
-        return fmt.Errorf("%w: invalid parameter: context=null", operationErr)
-    }
-    if executor == nil {
-        return fmt.Errorf("%w: invalid parameter: executor=null", operationErr)
-    }
+	// Guard.
+	if s == nil {
+		return fmt.Errorf("%s: invalid parameter: usage_credit_store=null", operationErr)
+	}
+	if s.tableName == "" {
+		return fmt.Errorf("%s: invalid parameter: table_name=empty", operationErr)
+	}
+	if ctx == nil {
+		return fmt.Errorf("%s: invalid parameter: context=null", operationErr)
+	}
+	if executor == nil {
+		return fmt.Errorf("%s: invalid parameter: executor=null", operationErr)
+	}
 
-    // Validate params.
-    if err := params.Validate(); err != nil {
-        return fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Validate params.
+	if err := params.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    // Build assignments.
-    assignments, args := params.BuildAssignments()
-    if len(assignments) == 0 {
-        return fmt.Errorf("%w: invalid parameter: assignments=empty", operationErr)
-    }
+	// Build assignments.
+	assignments, args := params.BuildAssignments()
+	if len(assignments) == 0 {
+		return fmt.Errorf("%s: invalid parameter: assignments=empty", operationErr)
+	}
 
-    args = append(args, id)
+	args = append(args, id)
 
-    // Generate UPDATE query.
-    query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?;", s.tableName, strings.Join(assignments, ", "), ColID)
+	// Generate UPDATE query.
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = ?;", s.tableName, strings.Join(assignments, ", "), ColID)
 
-    // Execute query.
-    if _, err := executor.ExecContext(ctx, query, args...); err != nil {
-        return fmt.Errorf("%w: %w", operationErr, err)
-    }
+	// Execute query.
+	if _, err := executor.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("%s: %w", operationErr, err)
+	}
 
-    return nil
+	return nil
 
 }
 
 //
-// Check whether usage credit type is valid.
+// IsValid reports whether the usage credit type is valid.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (t UsageCreditType) IsValid() bool {
-    switch t {
-    case UsageCreditTypePurchased,
-         UsageCreditTypeCampaign,
-         UsageCreditTypeCompensation,
-         UsageCreditTypeAdjustment:
-        return true
-    default:
-        return false
-    }
+	switch t {
+	case UsageCreditTypePurchased,
+		UsageCreditTypeCampaign,
+		UsageCreditTypeCompensation,
+		UsageCreditTypeAdjustment:
+		return true
+	default:
+		return false
+	}
 }
 
 //
-// Validate usage credit type.
+// Validate validates the usage credit type.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (t UsageCreditType) Validate() error {
-    if !t.IsValid() {
-        return fmt.Errorf("invalid parameter: usage_credit_type=%d", t)
-    }
-    return nil
+	if !t.IsValid() {
+		return fmt.Errorf("invalid parameter: usage_credit_type=%d", t)
+	}
+	return nil
 }
 
 //
-// Get usage credit type as driver.Valuer.
+// Value returns the usage credit type as a driver.Value.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (t UsageCreditType) Value() (driver.Value, error) {
-    if err := t.Validate(); err != nil {
-        return nil, err
-    }
+	if err := t.Validate(); err != nil {
+		return nil, err
+	}
 
-    return int64(t), nil
+	return int64(t), nil
 }
 
 //
-// Scan usage credit type.
+// Scan scans a usage credit type.
 //
 // Version:
 //   - 2026-07-26: Added.
 //
 func (t *UsageCreditType) Scan(value any) error {
-    if t == nil {
-        return fmt.Errorf("failed to scan usage credit type: invalid parameter: usage_credit_type=null")
-    }
+	if t == nil {
+		return fmt.Errorf("failed to scan usage credit type: invalid parameter: usage_credit_type=null")
+	}
 
-    v, err := k4k3ruInternalSQLScan.Uint8(value)
-    if err != nil {
-        return fmt.Errorf("failed to scan usage credit type: %w", err)
-    }
+	v, err := k4k3ruInternalSQLScan.Uint8(value)
+	if err != nil {
+		return fmt.Errorf("failed to scan usage credit type: %w", err)
+	}
 
-    result := UsageCreditType(v)
-    if err := result.Validate(); err != nil {
-        return fmt.Errorf("failed to scan usage credit type: %w", err)
-    }
+	result := UsageCreditType(v)
+	if err := result.Validate(); err != nil {
+		return fmt.Errorf("failed to scan usage credit type: %w", err)
+	}
 
-    *t = result
+	*t = result
 
-    return nil
+	return nil
 }
 
 //
-// Validate usage credit insert params.
+// Validate validates usage credit insert parameters.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (p *UsageCreditInsertParams) Validate() error {
-    if p == nil {
-        return fmt.Errorf("invalid parameter: usage_credit_insert_params=null")
-    }
-    if err := ValidateUsageCreditID(p.ID); err != nil {
-        return err
-    }
-    if err := ValidateUsageCreditAccountID(p.AccountID); err != nil {
-        return err
-    }
-    if err := ValidateUsageCreditType(p.Type); err != nil {
-        return err
-    }
-    if err := ValidateUsageCreditExpiresAt(p.ExpiresAt); err != nil {
-        return err
-    }
-    if err := ValidateUsageCreditDescription(p.Description); err != nil {
-        return err
-    }
-    if err := ValidateUsageCreditMetaData(p.MetaData); err != nil {
-        return err
-    }
-    return nil
+	if p == nil {
+		return fmt.Errorf("invalid parameter: usage_credit_insert_params=null")
+	}
+	if err := ValidateUsageCreditID(p.ID); err != nil {
+		return err
+	}
+	if err := ValidateUsageCreditAccountID(p.AccountID); err != nil {
+		return err
+	}
+	if err := ValidateUsageCreditType(p.Type); err != nil {
+		return err
+	}
+	if err := ValidateUsageCreditExpiresAt(p.ExpiresAt); err != nil {
+		return err
+	}
+	if err := ValidateUsageCreditDescription(p.Description); err != nil {
+		return err
+	}
+	if err := ValidateUsageCreditMetaData(p.MetaData); err != nil {
+		return err
+	}
+	return nil
 }
 
-//  
-// Build UPDATE assignments and args.
-//  
+//
+// BuildAssignments builds UPDATE assignments and arguments.
+//
 // Version:
 //   - 2025-07-27: Added.
 //
 func (p UsageCreditUpdateParams) BuildAssignments() ([]string, []any) {
-    assignments := make([]string, 0, 3)
-    args := make([]any, 0, 6)
-    
-    if p.BalanceTicks != nil {
-        assignments = append(assignments, ColBalanceTicks+"=?")
-        args = append(args, *p.BalanceTicks)
-    }
+	assignments := make([]string, 0, 3)
+	args := make([]any, 0, 6)
 
-    if p.SetNullDescription {
-        assignments = append(assignments, ColDescription+"=NULL")
-    } else if p.Description != nil {
-        assignments = append(assignments, ColDescription+"=?")
-        args = append(args, *p.Description)
-    }   
+	if p.BalanceTicks != nil {
+		assignments = append(assignments, ColBalanceTicks+"=?")
+		args = append(args, *p.BalanceTicks)
+	}
 
-    if p.SetNullMetaData {
-        assignments = append(assignments, ColMetaData+"=NULL")
-    } else if p.MetaData != nil {
-        assignments = append(assignments, ColMetaData+"=?")
-        args = append(args, *p.MetaData)
-    }   
-    
-    return assignments, args
+	if p.SetNullDescription {
+		assignments = append(assignments, ColDescription+"=NULL")
+	} else if p.Description != nil {
+		assignments = append(assignments, ColDescription+"=?")
+		args = append(args, *p.Description)
+	}
+
+	if p.SetNullMetaData {
+		assignments = append(assignments, ColMetaData+"=NULL")
+	} else if p.MetaData != nil {
+		assignments = append(assignments, ColMetaData+"=?")
+		args = append(args, *p.MetaData)
+	}
+
+	return assignments, args
 }
 
 //
-// Validate usage credit update params.
+// Validate validates usage credit update parameters.
 //
 // Version:
 //   - 2026-07-27: Added.
 //
 func (p UsageCreditUpdateParams) Validate() error {
-    if p.Description != nil {
-        if err := ValidateUsageCreditDescription(p.Description); err != nil {
-            return err
-        }
-    }
-    if p.MetaData != nil {
-        if err := ValidateUsageCreditMetaData(p.MetaData); err != nil {
-            return err
-        }
-    }
-    return nil
+	if p.Description != nil {
+		if err := ValidateUsageCreditDescription(p.Description); err != nil {
+			return err
+		}
+	}
+	if p.MetaData != nil {
+		if err := ValidateUsageCreditMetaData(p.MetaData); err != nil {
+			return err
+		}
+	}
+	return nil
 }
