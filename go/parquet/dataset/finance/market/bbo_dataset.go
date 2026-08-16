@@ -30,7 +30,7 @@ type BBODataset struct {
 func NewBBODataset(c *client.Client, params BBODatasetParams) (*BBODataset, error) {
 	value, err := dataset.New(c, NewBBOCodec(), dataset.Params{
 		Root:             params.Root,
-		PartitionColumns: []string{"venue", "market_type", "symbol", "date", "hour"},
+		PartitionColumns: intradayPartitionColumns(),
 		FileName:         params.FileName,
 		WriteMode:        params.WriteMode,
 	})

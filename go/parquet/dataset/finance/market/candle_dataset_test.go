@@ -32,9 +32,12 @@ func TestCandleDatasetWriteRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	partition := dataset.Partition{
-		"symbol":    "BTC-USDT",
-		"timeframe": "1m",
-		"date":      "2026-08-14",
+		"asset_class":     "crypto",
+		"venue":           "binance",
+		"instrument_type": "spot",
+		"symbol":          "BTC-USDT",
+		"timeframe":       "1m",
+		"date":            "2026-08-14",
 	}
 	records := []Candle{
 		{
@@ -62,7 +65,7 @@ func TestCandleDatasetWriteRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := result.Key, "market-data/candles/symbol=BTC-USDT/timeframe=1m/date=2026-08-14/candles.parquet"; got != want {
+	if got, want := result.Key, "market-data/candles/asset_class=crypto/venue=binance/instrument_type=spot/symbol=BTC-USDT/timeframe=1m/date=2026-08-14/candles.parquet"; got != want {
 		t.Fatalf("write key = %q, want %q", got, want)
 	}
 	if result.NumRows != int64(len(records)) || result.NumBytes == 0 {
@@ -104,7 +107,14 @@ func TestCandleDatasetReadsGeneratedParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	partition := dataset.Partition{"symbol": "BTC-USDT", "timeframe": "1m", "date": "2026-08-14"}
+	partition := dataset.Partition{
+		"asset_class":     "crypto",
+		"venue":           "binance",
+		"instrument_type": "spot",
+		"symbol":          "BTC-USDT",
+		"timeframe":       "1m",
+		"date":            "2026-08-14",
+	}
 	for index := 0; index < 2; index++ {
 		_, err := value.Write(context.Background(), CandleWriteParams{
 			Partition: partition,

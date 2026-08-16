@@ -32,7 +32,7 @@ type CandleDataset struct {
 func NewCandleDataset(c *client.Client, params CandleDatasetParams) (*CandleDataset, error) {
 	value, err := dataset.New(c, NewCandleCodec(), dataset.Params{
 		Root:             params.Root,
-		PartitionColumns: []string{"symbol", "timeframe", "date"},
+		PartitionColumns: []string{"asset_class", "venue", "instrument_type", "symbol", "timeframe", "date"},
 		FileName:         params.FileName,
 		WriteMode:        params.WriteMode,
 	})

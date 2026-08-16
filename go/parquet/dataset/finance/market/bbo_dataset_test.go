@@ -30,11 +30,12 @@ func TestBBODatasetWriteRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	partition := dataset.Partition{
-		"venue":       "hyperliquid",
-		"market_type": "perp",
-		"symbol":      "BTC-USDC",
-		"date":        "2026-08-15",
-		"hour":        "13",
+		"asset_class":     "crypto",
+		"venue":           "hyperliquid",
+		"instrument_type": "perpetual",
+		"symbol":          "BTC-USDC",
+		"date":            "2026-08-15",
+		"hour":            "13",
 	}
 	records := []BBO{
 		{
@@ -62,7 +63,7 @@ func TestBBODatasetWriteRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := result.Key, "market-data/bbo/venue=hyperliquid/market_type=perp/symbol=BTC-USDC/date=2026-08-15/hour=13/bbo.parquet"; got != want {
+	if got, want := result.Key, "market-data/bbo/asset_class=crypto/venue=hyperliquid/instrument_type=perpetual/symbol=BTC-USDC/date=2026-08-15/hour=13/bbo.parquet"; got != want {
 		t.Fatalf("write key = %q, want %q", got, want)
 	}
 	if result.NumRows != int64(len(records)) || result.NumBytes == 0 {
@@ -105,11 +106,12 @@ func TestBBODatasetReadsGeneratedParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	partition := dataset.Partition{
-		"venue":       "binance",
-		"market_type": "spot",
-		"symbol":      "BTC-USDT",
-		"date":        "2026-08-15",
-		"hour":        "13",
+		"asset_class":     "crypto",
+		"venue":           "binance",
+		"instrument_type": "spot",
+		"symbol":          "BTC-USDT",
+		"date":            "2026-08-15",
+		"hour":            "13",
 	}
 	for index := 0; index < 2; index++ {
 		timestamp := time.Unix(int64(index), 0).UTC()
