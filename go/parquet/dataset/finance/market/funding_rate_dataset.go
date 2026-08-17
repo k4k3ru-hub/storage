@@ -14,8 +14,10 @@ type FundingRateDatasetParams struct {
 }
 type FundingRateWriteParams = dataset.WriteParams[FundingRate]
 type FundingRateReadParams = dataset.ReadParams
+type FundingRateCompactParams = dataset.CompactParams
 type FundingRateWriteResult = dataset.WriteResult
 type FundingRateReadResult = dataset.ReadResult[FundingRate]
+type FundingRateCompactResult = dataset.CompactResult
 type FundingRateDataset struct{ dataset *dataset.Dataset[FundingRate] }
 
 // NewFundingRateDataset creates a perpetual funding-rate dataset.
@@ -44,4 +46,19 @@ func (d *FundingRateDataset) Write(ctx context.Context, params FundingRateWriteP
 //   - 2026-08-16: Added.
 func (d *FundingRateDataset) Read(ctx context.Context, params FundingRateReadParams) (FundingRateReadResult, error) {
 	return d.dataset.Read(ctx, params)
+}
+
+// Compact compacts immutable FundingRate Parquet parts in one partition.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - params: Partition and target output size.
+//
+// Returns:
+//   - Compaction result.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (d *FundingRateDataset) Compact(ctx context.Context, params FundingRateCompactParams) (FundingRateCompactResult, error) {
+	return d.dataset.Compact(ctx, params)
 }

@@ -1,6 +1,4 @@
-//
 // candle_codec.go
-//
 package market
 
 import (
@@ -33,6 +31,37 @@ func NewCandleCodec() *CandleCodec {
 	return &CandleCodec{}
 }
 
+// NewBatchReader opens a bounded Candle Parquet reader.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - source: Parquet source.
+//   - size: Source size in bytes.
+//
+// Returns:
+//   - Candle batch reader.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*CandleCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[Candle], error) {
+	return newBatchReader(ctx, source, size, candleFromRow)
+}
+
+// NewBatchWriter creates a bounded Candle Parquet writer.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - destination: Parquet destination.
+//
+// Returns:
+//   - Candle batch writer.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*CandleCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[Candle], error) {
+	return newBatchWriter(ctx, destination, candleToRow)
+}
+
 // Encode encodes Candle records as Apache Parquet.
 //
 // Version:
@@ -43,14 +72,7 @@ func (*CandleCodec) Encode(ctx context.Context, destination io.Writer, records [
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rows[index] = candleRow{
-			Timestamp: record.Timestamp.UnixMicro(),
-			Open:      record.Open,
-			High:      record.High,
-			Low:       record.Low,
-			Close:     record.Close,
-			Volume:    record.Volume,
-		}
+		rows[index] = candleToRow(record)
 	}
 
 	writer := parquetgo.NewGenericWriter[candleRow](
@@ -100,14 +122,29 @@ func (*CandleCodec) Decode(ctx context.Context, source dataset.ReadSource, size 
 
 	records := make([]Candle, len(rows))
 	for index, row := range rows {
-		records[index] = Candle{
-			Timestamp: timeFromUnixMicro(row.Timestamp),
-			Open:      row.Open,
-			High:      row.High,
-			Low:       row.Low,
-			Close:     row.Close,
-			Volume:    row.Volume,
-		}
+		records[index] = candleFromRow(row)
 	}
 	return records, nil
+}
+
+func candleToRow(record Candle) candleRow {
+	return candleRow{
+		Timestamp: record.Timestamp.UnixMicro(),
+		Open:      record.Open,
+		High:      record.High,
+		Low:       record.Low,
+		Close:     record.Close,
+		Volume:    record.Volume,
+	}
+}
+
+func candleFromRow(row candleRow) Candle {
+	return Candle{
+		Timestamp: timeFromUnixMicro(row.Timestamp),
+		Open:      row.Open,
+		High:      row.High,
+		Low:       row.Low,
+		Close:     row.Close,
+		Volume:    row.Volume,
+	}
 }

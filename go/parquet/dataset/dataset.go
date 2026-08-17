@@ -1,6 +1,4 @@
-//
 // dataset.go
-//
 package dataset
 
 import (
@@ -13,6 +11,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/k4k3ru-hub/storage/go/parquet/client"
 	"github.com/k4k3ru-hub/storage/go/parquet/store"
@@ -79,6 +78,8 @@ type Dataset[T any] struct {
 	partitionColumns []string
 	fileName         string
 	writeMode        WriteMode
+	compactionMu     sync.Mutex
+	compacting       map[string]struct{}
 }
 
 // New creates a typed Parquet dataset.
@@ -115,6 +116,7 @@ func New[T any](c *client.Client, codec Codec[T], params Params) (*Dataset[T], e
 		partitionColumns: columns,
 		fileName:         fileName,
 		writeMode:        params.WriteMode,
+		compacting:       make(map[string]struct{}),
 	}, nil
 }
 

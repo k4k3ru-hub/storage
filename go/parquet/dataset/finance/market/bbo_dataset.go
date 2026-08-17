@@ -16,8 +16,10 @@ type BBODatasetParams struct {
 
 type BBOWriteParams = dataset.WriteParams[BBO]
 type BBOReadParams = dataset.ReadParams
+type BBOCompactParams = dataset.CompactParams
 type BBOWriteResult = dataset.WriteResult
 type BBOReadResult = dataset.ReadResult[BBO]
+type BBOCompactResult = dataset.CompactResult
 
 type BBODataset struct {
 	dataset *dataset.Dataset[BBO]
@@ -54,4 +56,19 @@ func (d *BBODataset) Write(ctx context.Context, params BBOWriteParams) (BBOWrite
 //   - 2026-08-15: Added.
 func (d *BBODataset) Read(ctx context.Context, params BBOReadParams) (BBOReadResult, error) {
 	return d.dataset.Read(ctx, params)
+}
+
+// Compact compacts immutable BBO Parquet parts in one partition.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - params: Partition and target output size.
+//
+// Returns:
+//   - Compaction result.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (d *BBODataset) Compact(ctx context.Context, params BBOCompactParams) (BBOCompactResult, error) {
+	return d.dataset.Compact(ctx, params)
 }

@@ -1,6 +1,4 @@
-//
 // local.go
-//
 package local
 
 import (
@@ -101,6 +99,27 @@ func (s *Store) Create(ctx context.Context, key string, params store.CreateParam
 		finalPath: filename,
 		overwrite: params.Overwrite,
 	}, nil
+}
+
+// Delete deletes an object.
+//
+// Version:
+//   - 2026-08-17: Added.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	filename, err := s.resolve(key)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filename); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to delete local object: %w: key=%q", store.ErrNotFound, key)
+	} else if err != nil {
+		return fmt.Errorf("failed to delete local object: %w: key=%q", err, key)
+	}
+	return nil
 }
 
 // List lists objects whose keys have the given prefix.

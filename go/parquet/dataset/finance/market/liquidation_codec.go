@@ -26,6 +26,37 @@ type liquidationRow struct {
 //   - 2026-08-16: Added.
 func NewLiquidationCodec() *LiquidationCodec { return &LiquidationCodec{} }
 
+// NewBatchReader opens a bounded Liquidation Parquet reader.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - source: Parquet source.
+//   - size: Source size in bytes.
+//
+// Returns:
+//   - Liquidation batch reader.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*LiquidationCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[Liquidation], error) {
+	return newBatchReader(ctx, source, size, liquidationFromRow)
+}
+
+// NewBatchWriter creates a bounded Liquidation Parquet writer.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - destination: Parquet destination.
+//
+// Returns:
+//   - Liquidation batch writer.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*LiquidationCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[Liquidation], error) {
+	return newBatchWriter(ctx, destination, liquidationToRow)
+}
+
 // Encode encodes Liquidation records as Apache Parquet.
 //
 // Version:
@@ -36,7 +67,7 @@ func (*LiquidationCodec) Encode(ctx context.Context, destination io.Writer, reco
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rows[i] = liquidationRow{r.EventTimestamp.UnixMicro(), r.ReceivedTimestamp.UnixMicro(), r.LiquidationID, r.Side, r.Price, r.Quantity}
+		rows[i] = liquidationToRow(r)
 	}
 	writer := parquetgo.NewGenericWriter[liquidationRow](destination, parquetgo.Compression(&parquetgo.Zstd))
 	if _, err := writer.Write(rows); err != nil {
@@ -80,7 +111,29 @@ func (*LiquidationCodec) Decode(ctx context.Context, source dataset.ReadSource, 
 	}
 	records := make([]Liquidation, len(rows))
 	for i, r := range rows {
-		records[i] = Liquidation{timeFromUnixMicro(r.EventTimestamp), timeFromUnixMicro(r.ReceivedTimestamp), r.LiquidationID, r.Side, r.Price, r.Quantity}
+		records[i] = liquidationFromRow(r)
 	}
 	return records, nil
+}
+
+func liquidationToRow(record Liquidation) liquidationRow {
+	return liquidationRow{
+		EventTimestamp:    record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
+		LiquidationID:     record.LiquidationID,
+		Side:              record.Side,
+		Price:             record.Price,
+		Quantity:          record.Quantity,
+	}
+}
+
+func liquidationFromRow(row liquidationRow) Liquidation {
+	return Liquidation{
+		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
+		LiquidationID:     row.LiquidationID,
+		Side:              row.Side,
+		Price:             row.Price,
+		Quantity:          row.Quantity,
+	}
 }

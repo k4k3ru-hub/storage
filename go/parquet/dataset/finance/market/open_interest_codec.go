@@ -25,6 +25,37 @@ type openInterestRow struct {
 //   - 2026-08-16: Added.
 func NewOpenInterestCodec() *OpenInterestCodec { return &OpenInterestCodec{} }
 
+// NewBatchReader opens a bounded OpenInterest Parquet reader.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - source: Parquet source.
+//   - size: Source size in bytes.
+//
+// Returns:
+//   - OpenInterest batch reader.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*OpenInterestCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[OpenInterest], error) {
+	return newBatchReader(ctx, source, size, openInterestFromRow)
+}
+
+// NewBatchWriter creates a bounded OpenInterest Parquet writer.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - destination: Parquet destination.
+//
+// Returns:
+//   - OpenInterest batch writer.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*OpenInterestCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[OpenInterest], error) {
+	return newBatchWriter(ctx, destination, openInterestToRow)
+}
+
 // Encode encodes OpenInterest records as Apache Parquet.
 //
 // Version:
@@ -35,7 +66,7 @@ func (*OpenInterestCodec) Encode(ctx context.Context, destination io.Writer, rec
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rows[i] = openInterestRow{record.EventTimestamp.UnixMicro(), record.ReceivedTimestamp.UnixMicro(), record.Quantity, record.NotionalValue}
+		rows[i] = openInterestToRow(record)
 	}
 	writer := parquetgo.NewGenericWriter[openInterestRow](destination, parquetgo.Compression(&parquetgo.Zstd))
 	if _, err := writer.Write(rows); err != nil {
@@ -79,7 +110,25 @@ func (*OpenInterestCodec) Decode(ctx context.Context, source dataset.ReadSource,
 	}
 	records := make([]OpenInterest, len(rows))
 	for i, row := range rows {
-		records[i] = OpenInterest{timeFromUnixMicro(row.EventTimestamp), timeFromUnixMicro(row.ReceivedTimestamp), row.Quantity, row.NotionalValue}
+		records[i] = openInterestFromRow(row)
 	}
 	return records, nil
+}
+
+func openInterestToRow(record OpenInterest) openInterestRow {
+	return openInterestRow{
+		EventTimestamp:    record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
+		Quantity:          record.Quantity,
+		NotionalValue:     record.NotionalValue,
+	}
+}
+
+func openInterestFromRow(row openInterestRow) OpenInterest {
+	return OpenInterest{
+		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
+		Quantity:          row.Quantity,
+		NotionalValue:     row.NotionalValue,
+	}
 }

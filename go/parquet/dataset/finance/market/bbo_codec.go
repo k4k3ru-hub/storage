@@ -31,6 +31,37 @@ func NewBBOCodec() *BBOCodec {
 	return &BBOCodec{}
 }
 
+// NewBatchReader opens a bounded BBO Parquet reader.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - source: Parquet source.
+//   - size: Source size in bytes.
+//
+// Returns:
+//   - BBO batch reader.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*BBOCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[BBO], error) {
+	return newBatchReader(ctx, source, size, bboFromRow)
+}
+
+// NewBatchWriter creates a bounded BBO Parquet writer.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - destination: Parquet destination.
+//
+// Returns:
+//   - BBO batch writer.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (*BBOCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[BBO], error) {
+	return newBatchWriter(ctx, destination, bboToRow)
+}
+
 // Encode encodes BBO records as Apache Parquet.
 //
 // Version:
@@ -41,14 +72,7 @@ func (*BBOCodec) Encode(ctx context.Context, destination io.Writer, records []BB
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		rows[index] = bboRow{
-			EventTimestamp:    record.EventTimestamp.UnixMicro(),
-			ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
-			BidPrice:          record.BidPrice,
-			BidQuantity:       record.BidQuantity,
-			AskPrice:          record.AskPrice,
-			AskQuantity:       record.AskQuantity,
-		}
+		rows[index] = bboToRow(record)
 	}
 
 	writer := parquetgo.NewGenericWriter[bboRow](
@@ -98,14 +122,29 @@ func (*BBOCodec) Decode(ctx context.Context, source dataset.ReadSource, size int
 
 	records := make([]BBO, len(rows))
 	for index, row := range rows {
-		records[index] = BBO{
-			EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
-			ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
-			BidPrice:          row.BidPrice,
-			BidQuantity:       row.BidQuantity,
-			AskPrice:          row.AskPrice,
-			AskQuantity:       row.AskQuantity,
-		}
+		records[index] = bboFromRow(row)
 	}
 	return records, nil
+}
+
+func bboToRow(record BBO) bboRow {
+	return bboRow{
+		EventTimestamp:    record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
+		BidPrice:          record.BidPrice,
+		BidQuantity:       record.BidQuantity,
+		AskPrice:          record.AskPrice,
+		AskQuantity:       record.AskQuantity,
+	}
+}
+
+func bboFromRow(row bboRow) BBO {
+	return BBO{
+		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
+		BidPrice:          row.BidPrice,
+		BidQuantity:       row.BidQuantity,
+		AskPrice:          row.AskPrice,
+		AskQuantity:       row.AskQuantity,
+	}
 }

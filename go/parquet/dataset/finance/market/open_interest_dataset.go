@@ -14,8 +14,10 @@ type OpenInterestDatasetParams struct {
 }
 type OpenInterestWriteParams = dataset.WriteParams[OpenInterest]
 type OpenInterestReadParams = dataset.ReadParams
+type OpenInterestCompactParams = dataset.CompactParams
 type OpenInterestWriteResult = dataset.WriteResult
 type OpenInterestReadResult = dataset.ReadResult[OpenInterest]
+type OpenInterestCompactResult = dataset.CompactResult
 type OpenInterestDataset struct {
 	dataset *dataset.Dataset[OpenInterest]
 }
@@ -46,4 +48,19 @@ func (d *OpenInterestDataset) Write(ctx context.Context, params OpenInterestWrit
 //   - 2026-08-16: Added.
 func (d *OpenInterestDataset) Read(ctx context.Context, params OpenInterestReadParams) (OpenInterestReadResult, error) {
 	return d.dataset.Read(ctx, params)
+}
+
+// Compact compacts immutable OpenInterest Parquet parts in one partition.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - params: Partition and target output size.
+//
+// Returns:
+//   - Compaction result.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (d *OpenInterestDataset) Compact(ctx context.Context, params OpenInterestCompactParams) (OpenInterestCompactResult, error) {
+	return d.dataset.Compact(ctx, params)
 }

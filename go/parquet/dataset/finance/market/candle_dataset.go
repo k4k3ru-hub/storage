@@ -1,6 +1,4 @@
-//
 // candle_dataset.go
-//
 package market
 
 import (
@@ -18,8 +16,10 @@ type CandleDatasetParams struct {
 
 type CandleWriteParams = dataset.WriteParams[Candle]
 type CandleReadParams = dataset.ReadParams
+type CandleCompactParams = dataset.CompactParams
 type CandleWriteResult = dataset.WriteResult
 type CandleReadResult = dataset.ReadResult[Candle]
+type CandleCompactResult = dataset.CompactResult
 
 type CandleDataset struct {
 	dataset *dataset.Dataset[Candle]
@@ -56,4 +56,19 @@ func (d *CandleDataset) Write(ctx context.Context, params CandleWriteParams) (Ca
 //   - 2026-08-14: Added.
 func (d *CandleDataset) Read(ctx context.Context, params CandleReadParams) (CandleReadResult, error) {
 	return d.dataset.Read(ctx, params)
+}
+
+// Compact compacts immutable Candle Parquet parts in one partition.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - params: Partition and target output size.
+//
+// Returns:
+//   - Compaction result.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (d *CandleDataset) Compact(ctx context.Context, params CandleCompactParams) (CandleCompactResult, error) {
+	return d.dataset.Compact(ctx, params)
 }

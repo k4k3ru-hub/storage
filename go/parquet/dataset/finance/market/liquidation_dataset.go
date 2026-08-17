@@ -14,8 +14,10 @@ type LiquidationDatasetParams struct {
 }
 type LiquidationWriteParams = dataset.WriteParams[Liquidation]
 type LiquidationReadParams = dataset.ReadParams
+type LiquidationCompactParams = dataset.CompactParams
 type LiquidationWriteResult = dataset.WriteResult
 type LiquidationReadResult = dataset.ReadResult[Liquidation]
+type LiquidationCompactResult = dataset.CompactResult
 type LiquidationDataset struct{ dataset *dataset.Dataset[Liquidation] }
 
 // NewLiquidationDataset creates a forced-liquidation event dataset.
@@ -44,4 +46,19 @@ func (d *LiquidationDataset) Write(ctx context.Context, params LiquidationWriteP
 //   - 2026-08-16: Added.
 func (d *LiquidationDataset) Read(ctx context.Context, params LiquidationReadParams) (LiquidationReadResult, error) {
 	return d.dataset.Read(ctx, params)
+}
+
+// Compact compacts immutable Liquidation Parquet parts in one partition.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - params: Partition and target output size.
+//
+// Returns:
+//   - Compaction result.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (d *LiquidationDataset) Compact(ctx context.Context, params LiquidationCompactParams) (LiquidationCompactResult, error) {
+	return d.dataset.Compact(ctx, params)
 }

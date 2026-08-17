@@ -15,8 +15,10 @@ type TradeDatasetParams struct {
 }
 type TradeWriteParams = dataset.WriteParams[Trade]
 type TradeReadParams = dataset.ReadParams
+type TradeCompactParams = dataset.CompactParams
 type TradeWriteResult = dataset.WriteResult
 type TradeReadResult = dataset.ReadResult[Trade]
+type TradeCompactResult = dataset.CompactResult
 type TradeDataset struct{ dataset *dataset.Dataset[Trade] }
 
 // NewTradeDataset creates a public market trade dataset.
@@ -45,4 +47,19 @@ func (d *TradeDataset) Write(ctx context.Context, params TradeWriteParams) (Trad
 //   - 2026-08-16: Added.
 func (d *TradeDataset) Read(ctx context.Context, params TradeReadParams) (TradeReadResult, error) {
 	return d.dataset.Read(ctx, params)
+}
+
+// Compact compacts immutable Trade Parquet parts in one partition.
+//
+// Parameters:
+//   - ctx: Context for the operation.
+//   - params: Partition and target output size.
+//
+// Returns:
+//   - Compaction result.
+//
+// Version:
+//   - 2026-08-18: Added.
+func (d *TradeDataset) Compact(ctx context.Context, params TradeCompactParams) (TradeCompactResult, error) {
+	return d.dataset.Compact(ctx, params)
 }

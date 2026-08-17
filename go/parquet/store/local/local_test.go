@@ -1,6 +1,4 @@
-//
 // local_test.go
-//
 package local
 
 import (
@@ -82,6 +80,56 @@ func TestStoreCreateDoesNotOverwriteByDefault(t *testing.T) {
 			t.Fatalf("commit error = %v, want ErrAlreadyExists", err)
 		}
 		_ = writer.Abort(ctx)
+	}
+}
+
+func TestStoreDelete(t *testing.T) {
+	value, err := New(Params{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	writer, err := value.Create(ctx, "candles/date=2026-08-17/data.parquet", store.CreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := value.Delete(ctx, "candles/date=2026-08-17/data.parquet"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := value.Open(ctx, "candles/date=2026-08-17/data.parquet"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("open deleted object error = %v, want ErrNotFound", err)
+	}
+	if err := value.Delete(ctx, "candles/date=2026-08-17/data.parquet"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("delete missing object error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStoreDeleteRejectsInvalidKey(t *testing.T) {
+	value, err := New(Params{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := value.Delete(context.Background(), "../outside"); !errors.Is(err, store.ErrInvalidKey) {
+		t.Fatalf("delete error = %v, want ErrInvalidKey", err)
+	}
+}
+
+func TestStoreDeleteHonorsCanceledContext(t *testing.T) {
+	value, err := New(Params{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := value.Delete(ctx, "data.parquet"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("delete error = %v, want context.Canceled", err)
 	}
 }
 
