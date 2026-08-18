@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -81,15 +82,38 @@ func TestAdditionalCodecsBatchRoundTrip(t *testing.T) {
 		})
 	})
 	t.Run("open_interest", func(t *testing.T) {
+		conversionPrice := 117664.19
+		contractSize := 0.001
 		assertBatchRoundTrip(t, NewOpenInterestCodec(), []OpenInterest{
-			{event, received, 23456.75, 2760000000},
-			{event.Add(time.Second), received.Add(time.Second), 23457.25, 2761000000},
+			{
+				EventTimestamp: event, ReceivedTimestamp: received,
+				RawQuantity: 23456750, RawUnit: OpenInterestUnitContracts,
+				Quantity: 23456.75, NotionalValue: 2760000000, NotionalCurrency: "USDT",
+				ConversionPrice: &conversionPrice, ConversionPriceType: OpenInterestPriceTypeMark,
+				ContractSize: &contractSize,
+			},
+			{
+				EventTimestamp: event.Add(time.Second), ReceivedTimestamp: received.Add(time.Second),
+				RawQuantity: 23457.25, RawUnit: OpenInterestUnitBaseAsset,
+				Quantity: 23457.25, NotionalValue: 2761000000, NotionalCurrency: "USDC",
+			},
 		})
 	})
 	t.Run("funding_rate", func(t *testing.T) {
+		markPrice := 118001.0
+		indexPrice := 117995.0
+		premiumRate := 0.00005
 		assertBatchRoundTrip(t, NewFundingRateCodec(), []FundingRate{
-			{event, received, event.Add(time.Hour), 0.0001, 0.00012, 118001, 117995},
-			{event.Add(time.Second), received.Add(time.Second), event.Add(2 * time.Hour), 0.00011, 0.00013, 118002, 117996},
+			{
+				EventTimestamp: event, ReceivedTimestamp: received, EffectiveTimestamp: event.Add(time.Hour),
+				Rate: 0.0001, Kind: FundingRateKindCurrentEstimate, IntervalMinutes: 60,
+				MarkPrice: &markPrice, IndexPrice: &indexPrice, PremiumRate: &premiumRate,
+			},
+			{
+				EventTimestamp: event.Add(time.Second), ReceivedTimestamp: received.Add(time.Second),
+				EffectiveTimestamp: event.Add(2 * time.Hour), Rate: 0.00011,
+				Kind: FundingRateKindSettled, IntervalMinutes: 480,
+			},
 		})
 	})
 	t.Run("liquidation", func(t *testing.T) {
@@ -134,7 +158,7 @@ func TestBatchCodecHonorsCanceledContext(t *testing.T) {
 	}
 }
 
-func assertBatchRoundTrip[T comparable](t *testing.T, codec dataset.CompactionCodec[T], records []T) {
+func assertBatchRoundTrip[T any](t *testing.T, codec dataset.CompactionCodec[T], records []T) {
 	t.Helper()
 	ctx := context.Background()
 	var encoded bytes.Buffer
@@ -195,7 +219,7 @@ func assertBatchRoundTrip[T comparable](t *testing.T, codec dataset.CompactionCo
 		t.Fatalf("decoded %d records, want %d", len(decoded), len(records))
 	}
 	for index := range records {
-		if decoded[index] != records[index] {
+		if !reflect.DeepEqual(decoded[index], records[index]) {
 			t.Fatalf("record %d = %+v, want %+v", index, decoded[index], records[index])
 		}
 	}

@@ -13,16 +13,23 @@ import (
 
 type OpenInterestCodec struct{}
 type openInterestRow struct {
-	EventTimestamp    int64   `parquet:"event_timestamp,timestamp(microsecond)"`
-	ReceivedTimestamp int64   `parquet:"received_timestamp,timestamp(microsecond)"`
-	Quantity          float64 `parquet:"quantity"`
-	NotionalValue     float64 `parquet:"notional_value"`
+	EventTimestamp      int64    `parquet:"event_timestamp,timestamp(microsecond)"`
+	ReceivedTimestamp   int64    `parquet:"received_timestamp,timestamp(microsecond)"`
+	RawQuantity         float64  `parquet:"raw_quantity"`
+	RawUnit             string   `parquet:"raw_unit"`
+	Quantity            float64  `parquet:"quantity"`
+	NotionalValue       float64  `parquet:"notional_value"`
+	NotionalCurrency    string   `parquet:"notional_currency"`
+	ConversionPrice     *float64 `parquet:"conversion_price,optional"`
+	ConversionPriceType string   `parquet:"conversion_price_type"`
+	ContractSize        *float64 `parquet:"contract_size,optional"`
 }
 
 // NewOpenInterestCodec creates an OpenInterest Parquet codec.
 //
 // Version:
 //   - 2026-08-16: Added.
+//   - 2026-08-19: Preserved raw units and normalization inputs.
 func NewOpenInterestCodec() *OpenInterestCodec { return &OpenInterestCodec{} }
 
 // NewBatchReader opens a bounded OpenInterest Parquet reader.
@@ -36,6 +43,7 @@ func NewOpenInterestCodec() *OpenInterestCodec { return &OpenInterestCodec{} }
 //   - OpenInterest batch reader.
 //
 // Version:
+//   - 2026-08-19: Added normalized OpenInterest fields.
 //   - 2026-08-18: Added.
 func (*OpenInterestCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[OpenInterest], error) {
 	return newBatchReader(ctx, source, size, openInterestFromRow)
@@ -51,6 +59,7 @@ func (*OpenInterestCodec) NewBatchReader(ctx context.Context, source dataset.Rea
 //   - OpenInterest batch writer.
 //
 // Version:
+//   - 2026-08-19: Added normalized OpenInterest fields.
 //   - 2026-08-18: Added.
 func (*OpenInterestCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[OpenInterest], error) {
 	return newBatchWriter(ctx, destination, openInterestToRow)
@@ -59,6 +68,7 @@ func (*OpenInterestCodec) NewBatchWriter(ctx context.Context, destination io.Wri
 // Encode encodes OpenInterest records as Apache Parquet.
 //
 // Version:
+//   - 2026-08-19: Added normalized OpenInterest fields.
 //   - 2026-08-16: Added.
 func (*OpenInterestCodec) Encode(ctx context.Context, destination io.Writer, records []OpenInterest) error {
 	rows := make([]openInterestRow, len(records))
@@ -82,6 +92,7 @@ func (*OpenInterestCodec) Encode(ctx context.Context, destination io.Writer, rec
 // Decode decodes Apache Parquet into OpenInterest records.
 //
 // Version:
+//   - 2026-08-19: Added normalized OpenInterest fields.
 //   - 2026-08-16: Added.
 func (*OpenInterestCodec) Decode(ctx context.Context, source dataset.ReadSource, size int64) ([]OpenInterest, error) {
 	file, err := parquetgo.OpenFile(source, size)
@@ -117,18 +128,30 @@ func (*OpenInterestCodec) Decode(ctx context.Context, source dataset.ReadSource,
 
 func openInterestToRow(record OpenInterest) openInterestRow {
 	return openInterestRow{
-		EventTimestamp:    record.EventTimestamp.UnixMicro(),
-		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
-		Quantity:          record.Quantity,
-		NotionalValue:     record.NotionalValue,
+		EventTimestamp:      record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp:   record.ReceivedTimestamp.UnixMicro(),
+		RawQuantity:         record.RawQuantity,
+		RawUnit:             string(record.RawUnit),
+		Quantity:            record.Quantity,
+		NotionalValue:       record.NotionalValue,
+		NotionalCurrency:    record.NotionalCurrency,
+		ConversionPrice:     record.ConversionPrice,
+		ConversionPriceType: string(record.ConversionPriceType),
+		ContractSize:        record.ContractSize,
 	}
 }
 
 func openInterestFromRow(row openInterestRow) OpenInterest {
 	return OpenInterest{
-		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
-		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
-		Quantity:          row.Quantity,
-		NotionalValue:     row.NotionalValue,
+		EventTimestamp:      timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp:   timeFromUnixMicro(row.ReceivedTimestamp),
+		RawQuantity:         row.RawQuantity,
+		RawUnit:             OpenInterestUnit(row.RawUnit),
+		Quantity:            row.Quantity,
+		NotionalValue:       row.NotionalValue,
+		NotionalCurrency:    row.NotionalCurrency,
+		ConversionPrice:     row.ConversionPrice,
+		ConversionPriceType: OpenInterestPriceType(row.ConversionPriceType),
+		ContractSize:        row.ContractSize,
 	}
 }

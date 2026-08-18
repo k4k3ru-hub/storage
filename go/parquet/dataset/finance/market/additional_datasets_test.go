@@ -47,7 +47,18 @@ func TestAdditionalDatasetsWriteRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []OpenInterest{{event, received, 23456.75, 2760000000}}
+			conversionPrice := 117664.19
+			want := []OpenInterest{{
+				EventTimestamp:      event,
+				ReceivedTimestamp:   received,
+				RawQuantity:         23456.75,
+				RawUnit:             OpenInterestUnitBaseAsset,
+				Quantity:            23456.75,
+				NotionalValue:       2760000000,
+				NotionalCurrency:    "USDC",
+				ConversionPrice:     &conversionPrice,
+				ConversionPriceType: OpenInterestPriceTypeMark,
+			}}
 			if _, err := d.Write(context.Background(), OpenInterestWriteParams{Partition: partition, Records: want}); err != nil {
 				t.Fatal(err)
 			}
@@ -64,7 +75,20 @@ func TestAdditionalDatasetsWriteRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []FundingRate{{event, received, event.Add(time.Hour), 0.0001, 0.00012, 118001, 117995}}
+			markPrice := 118001.0
+			indexPrice := 117995.0
+			premiumRate := 0.00005
+			want := []FundingRate{{
+				EventTimestamp:     event,
+				ReceivedTimestamp:  received,
+				EffectiveTimestamp: event.Add(time.Hour),
+				Rate:               0.0001,
+				Kind:               FundingRateKindCurrentEstimate,
+				IntervalMinutes:    60,
+				MarkPrice:          &markPrice,
+				IndexPrice:         &indexPrice,
+				PremiumRate:        &premiumRate,
+			}}
 			if _, err := d.Write(context.Background(), FundingRateWriteParams{Partition: partition, Records: want}); err != nil {
 				t.Fatal(err)
 			}

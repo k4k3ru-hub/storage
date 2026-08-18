@@ -25,6 +25,7 @@ type OpenInterestDataset struct {
 // NewOpenInterestDataset creates an open-interest observation dataset.
 //
 // Version:
+//   - 2026-08-19: Composed the normalized OpenInterest schema.
 //   - 2026-08-16: Added.
 func NewOpenInterestDataset(c *client.Client, params OpenInterestDatasetParams) (*OpenInterestDataset, error) {
 	value, err := dataset.New(c, NewOpenInterestCodec(), dataset.Params{Root: params.Root, PartitionColumns: intradayPartitionColumns(), FileName: params.FileName, WriteMode: params.WriteMode})

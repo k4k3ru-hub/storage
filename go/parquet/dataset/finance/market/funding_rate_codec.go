@@ -12,19 +12,22 @@ import (
 
 type FundingRateCodec struct{}
 type fundingRateRow struct {
-	EventTimestamp    int64   `parquet:"event_timestamp,timestamp(microsecond)"`
-	ReceivedTimestamp int64   `parquet:"received_timestamp,timestamp(microsecond)"`
-	FundingTimestamp  int64   `parquet:"funding_timestamp,timestamp(microsecond)"`
-	Rate              float64 `parquet:"rate"`
-	PredictedRate     float64 `parquet:"predicted_rate"`
-	MarkPrice         float64 `parquet:"mark_price"`
-	IndexPrice        float64 `parquet:"index_price"`
+	EventTimestamp     int64    `parquet:"event_timestamp,timestamp(microsecond)"`
+	ReceivedTimestamp  int64    `parquet:"received_timestamp,timestamp(microsecond)"`
+	EffectiveTimestamp int64    `parquet:"effective_timestamp,timestamp(microsecond)"`
+	Rate               float64  `parquet:"rate"`
+	Kind               string   `parquet:"kind"`
+	IntervalMinutes    int32    `parquet:"interval_minutes"`
+	MarkPrice          *float64 `parquet:"mark_price,optional"`
+	IndexPrice         *float64 `parquet:"index_price,optional"`
+	PremiumRate        *float64 `parquet:"premium_rate,optional"`
 }
 
 // NewFundingRateCodec creates a FundingRate Parquet codec.
 //
 // Version:
 //   - 2026-08-16: Added.
+//   - 2026-08-19: Distinguished rate kinds and funding intervals.
 func NewFundingRateCodec() *FundingRateCodec { return &FundingRateCodec{} }
 
 // NewBatchReader opens a bounded FundingRate Parquet reader.
@@ -38,6 +41,7 @@ func NewFundingRateCodec() *FundingRateCodec { return &FundingRateCodec{} }
 //   - FundingRate batch reader.
 //
 // Version:
+//   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-18: Added.
 func (*FundingRateCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[FundingRate], error) {
 	return newBatchReader(ctx, source, size, fundingRateFromRow)
@@ -53,6 +57,7 @@ func (*FundingRateCodec) NewBatchReader(ctx context.Context, source dataset.Read
 //   - FundingRate batch writer.
 //
 // Version:
+//   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-18: Added.
 func (*FundingRateCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[FundingRate], error) {
 	return newBatchWriter(ctx, destination, fundingRateToRow)
@@ -61,6 +66,7 @@ func (*FundingRateCodec) NewBatchWriter(ctx context.Context, destination io.Writ
 // Encode encodes FundingRate records as Apache Parquet.
 //
 // Version:
+//   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-16: Added.
 func (*FundingRateCodec) Encode(ctx context.Context, destination io.Writer, records []FundingRate) error {
 	rows := make([]fundingRateRow, len(records))
@@ -84,6 +90,7 @@ func (*FundingRateCodec) Encode(ctx context.Context, destination io.Writer, reco
 // Decode decodes Apache Parquet into FundingRate records.
 //
 // Version:
+//   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-16: Added.
 func (*FundingRateCodec) Decode(ctx context.Context, source dataset.ReadSource, size int64) ([]FundingRate, error) {
 	file, err := parquetgo.OpenFile(source, size)
@@ -119,24 +126,28 @@ func (*FundingRateCodec) Decode(ctx context.Context, source dataset.ReadSource, 
 
 func fundingRateToRow(record FundingRate) fundingRateRow {
 	return fundingRateRow{
-		EventTimestamp:    record.EventTimestamp.UnixMicro(),
-		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
-		FundingTimestamp:  record.FundingTimestamp.UnixMicro(),
-		Rate:              record.Rate,
-		PredictedRate:     record.PredictedRate,
-		MarkPrice:         record.MarkPrice,
-		IndexPrice:        record.IndexPrice,
+		EventTimestamp:     record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp:  record.ReceivedTimestamp.UnixMicro(),
+		EffectiveTimestamp: record.EffectiveTimestamp.UnixMicro(),
+		Rate:               record.Rate,
+		Kind:               string(record.Kind),
+		IntervalMinutes:    record.IntervalMinutes,
+		MarkPrice:          record.MarkPrice,
+		IndexPrice:         record.IndexPrice,
+		PremiumRate:        record.PremiumRate,
 	}
 }
 
 func fundingRateFromRow(row fundingRateRow) FundingRate {
 	return FundingRate{
-		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
-		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
-		FundingTimestamp:  timeFromUnixMicro(row.FundingTimestamp),
-		Rate:              row.Rate,
-		PredictedRate:     row.PredictedRate,
-		MarkPrice:         row.MarkPrice,
-		IndexPrice:        row.IndexPrice,
+		EventTimestamp:     timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp:  timeFromUnixMicro(row.ReceivedTimestamp),
+		EffectiveTimestamp: timeFromUnixMicro(row.EffectiveTimestamp),
+		Rate:               row.Rate,
+		Kind:               FundingRateKind(row.Kind),
+		IntervalMinutes:    row.IntervalMinutes,
+		MarkPrice:          row.MarkPrice,
+		IndexPrice:         row.IndexPrice,
+		PremiumRate:        row.PremiumRate,
 	}
 }
