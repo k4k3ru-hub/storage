@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/k4k3ru-hub/storage/go/parquet/store"
@@ -55,6 +57,70 @@ func TestStoreCreateOpenAndList(t *testing.T) {
 	}
 	if iterator.Next(ctx) {
 		t.Fatal("iterator returned an unexpected second object")
+	}
+}
+
+func TestStoreCreateAppliesPublishedFileMode(t *testing.T) {
+	root := t.TempDir()
+	value, err := New(Params{Root: root, FileMode: 0o640})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	writer, err := value.Create(ctx, "data.parquet", store.CreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(root, "data.parquet"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
+		t.Fatalf("object file mode = %#o, want %#o", got, want)
+	}
+}
+
+func TestStoreCreateAppliesPublishedFileModeWhenOverwriting(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "data.parquet")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := New(Params{Root: root, FileMode: 0o640})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	writer, err := value.Create(ctx, "data.parquet", store.CreateParams{Overwrite: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
+		t.Fatalf("object file mode = %#o, want %#o", got, want)
+	}
+}
+
+func TestNewRejectsInvalidPublishedFileMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o641, 0o620, os.ModeSetuid | 0o640} {
+		if _, err := New(Params{Root: t.TempDir(), FileMode: mode}); err == nil {
+			t.Fatalf("New() accepted invalid file mode %#o", mode)
+		}
 	}
 }
 

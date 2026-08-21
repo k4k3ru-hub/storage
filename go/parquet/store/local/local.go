@@ -16,16 +16,19 @@ import (
 )
 
 type Params struct {
-	Root string
+	Root     string
+	FileMode fs.FileMode
 }
 
 type Store struct {
-	root string
+	root     string
+	fileMode fs.FileMode
 }
 
 // New creates a local object store.
 //
 // Version:
+//   - 2026-08-22: Accepted the published object file mode.
 //   - 2026-08-14: Added.
 func New(params Params) (*Store, error) {
 	if strings.TrimSpace(params.Root) == "" {
@@ -39,8 +42,15 @@ func New(params Params) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("create local store root: %w", err)
 	}
+	fileMode := params.FileMode
+	if fileMode == 0 {
+		fileMode = 0o600
+	}
+	if fileMode.Perm() != fileMode || fileMode&0o111 != 0 || fileMode&0o022 != 0 {
+		return nil, fmt.Errorf("published local object file mode is invalid: file_mode=%#o", fileMode)
+	}
 
-	return &Store{root: root}, nil
+	return &Store{root: root, fileMode: fileMode}, nil
 }
 
 // Open opens an object for random-access reading.
@@ -95,9 +105,10 @@ func (s *Store) Create(ctx context.Context, key string, params store.CreateParam
 	}
 
 	return &objectWriter{
-		file:      temporary,
-		finalPath: filename,
-		overwrite: params.Overwrite,
+		file:       temporary,
+		finalPath:  filename,
+		fileMode:   s.fileMode,
+		overwrite:  params.Overwrite,
 	}, nil
 }
 
@@ -209,6 +220,7 @@ type objectWriter struct {
 	mu        sync.Mutex
 	file      *os.File
 	finalPath string
+	fileMode  fs.FileMode
 	overwrite bool
 	written   int64
 	finished  bool
@@ -248,6 +260,9 @@ func (w *objectWriter) Commit(ctx context.Context) error {
 	}
 
 	temporaryPath := w.file.Name()
+	if err := os.Chmod(temporaryPath, w.fileMode); err != nil {
+		return fmt.Errorf("set temporary local object file mode: %w", err)
+	}
 	if w.overwrite {
 		if err := os.Rename(temporaryPath, w.finalPath); err != nil {
 			return fmt.Errorf("replace local object: %w", err)
