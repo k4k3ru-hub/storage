@@ -24,12 +24,15 @@ type CompactParams struct {
 }
 
 type CompactResult struct {
-	Compacted   bool
-	InputFiles  []string
-	OutputFiles []string
-	NumRows     int64
-	InputBytes  int64
-	OutputBytes int64
+	Compacted        bool
+	InputFiles       []string
+	OutputFiles      []string
+	InputRows        int64
+	OutputRows       int64
+	DeduplicatedRows int64
+	NumRows          int64
+	InputBytes       int64
+	OutputBytes      int64
 }
 
 type objectDeleter interface {
@@ -117,7 +120,7 @@ func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result 
 		return result, fmt.Errorf("%s: %w", operationErr, err)
 	}
 	targetRows := estimatedTargetRows(params.TargetFileSizeBytes, inputRows, inputBytes)
-	outputs, err := d.writeCompactionOutputs(ctx, codec, inputs, prefix, compactionID, targetRows)
+	outputs, expectedOutputRows, err := d.writeCompactionOutputs(ctx, codec, inputs, prefix, compactionID, targetRows)
 	if err != nil {
 		cleanupErr := deleteAllCompactionObjects(context.WithoutCancel(ctx), deleter, temporaryKeys(outputs))
 		return result, errors.Join(fmt.Errorf("%s: %w", operationErr, err), cleanupErr)
@@ -137,8 +140,16 @@ func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result 
 	if err != nil {
 		return result, fmt.Errorf("%s: %w", operationErr, err)
 	}
-	if outputRows != inputRows {
-		return result, fmt.Errorf("%s: output row count mismatch: input_rows=%d output_rows=%d", operationErr, inputRows, outputRows)
+	deduplicatedRows := inputRows - outputRows
+	if outputRows != expectedOutputRows || deduplicatedRows < 0 || outputRows+deduplicatedRows != inputRows {
+		return result, fmt.Errorf(
+			"%s: output row count mismatch: input_rows=%d expected_output_rows=%d output_rows=%d deduplicated_rows=%d",
+			operationErr,
+			inputRows,
+			expectedOutputRows,
+			outputRows,
+			deduplicatedRows,
+		)
 	}
 
 	published, err := d.publishCompactionOutputs(ctx, outputs)
@@ -147,13 +158,13 @@ func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result 
 		return result, errors.Join(fmt.Errorf("%s: %w", operationErr, err), rollbackErr)
 	}
 	publishedRows, publishedBytes, err := d.validateCompactionObjects(ctx, codec, outputs, false, baseline)
-	if err != nil || publishedRows != inputRows {
+	if err != nil || publishedRows != outputRows {
 		rollbackErr := deleteAllCompactionObjects(context.WithoutCancel(ctx), deleter, published)
 		if err != nil {
 			return result, errors.Join(fmt.Errorf("%s: %w", operationErr, err), rollbackErr)
 		}
 		return result, errors.Join(
-			fmt.Errorf("%s: published row count mismatch: input_rows=%d output_rows=%d", operationErr, inputRows, publishedRows),
+			fmt.Errorf("%s: published row count mismatch: expected_output_rows=%d output_rows=%d", operationErr, outputRows, publishedRows),
 			rollbackErr,
 		)
 	}
@@ -175,12 +186,15 @@ func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result 
 	}
 
 	result = CompactResult{
-		Compacted:   true,
-		InputFiles:  inputKeys(inputs),
-		OutputFiles: finalKeys(outputs),
-		NumRows:     inputRows,
-		InputBytes:  inputBytes,
-		OutputBytes: publishedBytes,
+		Compacted:        true,
+		InputFiles:       inputKeys(inputs),
+		OutputFiles:      finalKeys(outputs),
+		InputRows:        inputRows,
+		OutputRows:       outputRows,
+		DeduplicatedRows: deduplicatedRows,
+		NumRows:          outputRows,
+		InputBytes:       inputBytes,
+		OutputBytes:      publishedBytes,
 	}
 	return result, nil
 }
@@ -269,7 +283,14 @@ func (d *Dataset[T]) writeCompactionOutputs(
 	prefix string,
 	compactionID string,
 	targetRows int64,
-) (outputs []compactionOutput, err error) {
+) (outputs []compactionOutput, outputRows int64, err error) {
+	var normalizedRecords []T
+	if d.compactionPolicy != nil {
+		normalizedRecords, err = d.readAndNormalizeCompactionRecords(ctx, codec, inputs)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
 	var destination store.ObjectWriter
 	var writer BatchWriter[T]
 	var current compactionOutput
@@ -323,48 +344,61 @@ func (d *Dataset[T]) writeCompactionOutputs(
 			err = errors.Join(err, fmt.Errorf("failed to abort compaction output: %w", abortErr))
 		}
 	}()
+	writeRecords := func(records []T) error {
+		position := 0
+		for position < len(records) {
+			if writer == nil {
+				if err := openCurrent(); err != nil {
+					return err
+				}
+			}
+			remaining := targetRows - current.numRows
+			count := int64(len(records) - position)
+			if count > remaining {
+				count = remaining
+			}
+			if err := writer.Write(ctx, records[position:position+int(count)]); err != nil {
+				return fmt.Errorf("failed to encode compaction output: %w: key=%q", err, current.temporaryKey)
+			}
+			position += int(count)
+			current.numRows += count
+			outputRows += count
+			if current.numRows >= targetRows {
+				if err := closeCurrent(); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	if d.compactionPolicy != nil {
+		if err := writeRecords(normalizedRecords); err != nil {
+			return outputs, outputRows, err
+		}
+		if err := closeCurrent(); err != nil {
+			return outputs, outputRows, err
+		}
+		return outputs, outputRows, nil
+	}
 
 	buffer := make([]T, compactionBatchSize)
 	for _, input := range inputs {
 		object, openErr := d.store.Open(ctx, input.key)
 		if openErr != nil {
-			return outputs, fmt.Errorf("failed to open compaction input: %w: key=%q", openErr, input.key)
+			return outputs, outputRows, fmt.Errorf("failed to open compaction input: %w: key=%q", openErr, input.key)
 		}
 		reader, readerErr := codec.NewBatchReader(ctx, object, object.Size())
 		if readerErr != nil {
 			_ = object.Close()
-			return outputs, fmt.Errorf("failed to create compaction batch reader: %w: key=%q", readerErr, input.key)
+			return outputs, outputRows, fmt.Errorf("failed to create compaction batch reader: %w: key=%q", readerErr, input.key)
 		}
 		for {
 			n, readErr := reader.Read(ctx, buffer)
-			position := 0
-			for position < n {
-				if writer == nil {
-					if err := openCurrent(); err != nil {
-						_ = reader.Close()
-						_ = object.Close()
-						return outputs, err
-					}
-				}
-				remaining := targetRows - current.numRows
-				count := int64(n - position)
-				if count > remaining {
-					count = remaining
-				}
-				if err := writer.Write(ctx, buffer[position:position+int(count)]); err != nil {
-					_ = reader.Close()
-					_ = object.Close()
-					return outputs, fmt.Errorf("failed to encode compaction output: %w: key=%q", err, current.temporaryKey)
-				}
-				position += int(count)
-				current.numRows += count
-				if current.numRows >= targetRows {
-					if err := closeCurrent(); err != nil {
-						_ = reader.Close()
-						_ = object.Close()
-						return outputs, err
-					}
-				}
+			if err := writeRecords(buffer[:n]); err != nil {
+				_ = reader.Close()
+				_ = object.Close()
+				return outputs, outputRows, err
 			}
 			if errors.Is(readErr, io.EOF) {
 				break
@@ -372,17 +406,68 @@ func (d *Dataset[T]) writeCompactionOutputs(
 			if readErr != nil {
 				_ = reader.Close()
 				_ = object.Close()
-				return outputs, fmt.Errorf("failed to decode compaction input: %w: key=%q", readErr, input.key)
+				return outputs, outputRows, fmt.Errorf("failed to decode compaction input: %w: key=%q", readErr, input.key)
 			}
 		}
 		if closeErr := errors.Join(reader.Close(), object.Close()); closeErr != nil {
-			return outputs, fmt.Errorf("failed to close compaction input: %w: key=%q", closeErr, input.key)
+			return outputs, outputRows, fmt.Errorf("failed to close compaction input: %w: key=%q", closeErr, input.key)
 		}
 	}
 	if err := closeCurrent(); err != nil {
-		return outputs, err
+		return outputs, outputRows, err
 	}
-	return outputs, nil
+	return outputs, outputRows, nil
+}
+
+func (d *Dataset[T]) readAndNormalizeCompactionRecords(
+	ctx context.Context,
+	codec CompactionCodec[T],
+	inputs []compactionInput,
+) ([]T, error) {
+	records := make([]T, 0)
+	buffer := make([]T, compactionBatchSize)
+	for _, input := range inputs {
+		object, err := d.store.Open(ctx, input.key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open compaction input: %w: key=%q", err, input.key)
+		}
+		reader, err := codec.NewBatchReader(ctx, object, object.Size())
+		if err != nil {
+			_ = object.Close()
+			return nil, fmt.Errorf("failed to create compaction batch reader: %w: key=%q", err, input.key)
+		}
+		for {
+			n, readErr := reader.Read(ctx, buffer)
+			records = append(records, buffer[:n]...)
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				_ = reader.Close()
+				_ = object.Close()
+				return nil, fmt.Errorf("failed to decode compaction input: %w: key=%q", readErr, input.key)
+			}
+		}
+		if closeErr := errors.Join(reader.Close(), object.Close()); closeErr != nil {
+			return nil, fmt.Errorf("failed to close compaction input: %w: key=%q", closeErr, input.key)
+		}
+	}
+	normalized := make([]T, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		key, deduplicate := d.compactionPolicy.DeduplicationKey(record)
+		if deduplicate {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		normalized = append(normalized, record)
+	}
+	sort.SliceStable(normalized, func(left, right int) bool {
+		return d.compactionPolicy.Compare(normalized[left], normalized[right]) < 0
+	})
+	return normalized, nil
 }
 
 func (d *Dataset[T]) validateCompactionObjects(

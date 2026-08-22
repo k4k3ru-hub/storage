@@ -30,12 +30,12 @@ type BBODataset struct {
 // Version:
 //   - 2026-08-15: Added.
 func NewBBODataset(c *client.Client, params BBODatasetParams) (*BBODataset, error) {
-	value, err := dataset.New(c, NewBBOCodec(), dataset.Params{
+	value, err := dataset.NewWithCompactionPolicy(c, NewBBOCodec(), dataset.Params{
 		Root:             params.Root,
 		PartitionColumns: intradayPartitionColumns(),
 		FileName:         params.FileName,
 		WriteMode:        params.WriteMode,
-	})
+	}, bboCompactionPolicy{})
 	if err != nil {
 		return nil, err
 	}

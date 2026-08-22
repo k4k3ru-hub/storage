@@ -51,6 +51,15 @@ type Params struct {
 	WriteMode        WriteMode
 }
 
+// CompactionPolicy defines record ordering and equality for compaction.
+//
+// Version:
+//   - 2026-08-22: Added.
+type CompactionPolicy[T any] interface {
+	Compare(left, right T) int
+	DeduplicationKey(record T) (string, bool)
+}
+
 type WriteParams[T any] struct {
 	Partition Partition
 	Records   []T
@@ -78,8 +87,36 @@ type Dataset[T any] struct {
 	partitionColumns []string
 	fileName         string
 	writeMode        WriteMode
+	compactionPolicy CompactionPolicy[T]
 	compactionMu     sync.Mutex
 	compacting       map[string]struct{}
+}
+
+// NewWithCompactionPolicy creates a typed Parquet dataset with ordered,
+// deduplicating compaction.
+//
+// Parameters:
+//   - c: Parquet client.
+//   - codec: Dataset codec.
+//   - params: Dataset parameters.
+//   - policy: Compaction ordering and equality policy.
+//
+// Returns:
+//   - Typed dataset.
+//   - Creation error.
+//
+// Version:
+//   - 2026-08-22: Added.
+func NewWithCompactionPolicy[T any](c *client.Client, codec Codec[T], params Params, policy CompactionPolicy[T]) (*Dataset[T], error) {
+	value, err := New(c, codec, params)
+	if err != nil {
+		return nil, err
+	}
+	if policy == nil {
+		return nil, fmt.Errorf("dataset compaction policy is nil")
+	}
+	value.compactionPolicy = policy
+	return value, nil
 }
 
 // New creates a typed Parquet dataset.

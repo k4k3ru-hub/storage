@@ -30,12 +30,12 @@ type CandleDataset struct {
 // Version:
 //   - 2026-08-14: Added.
 func NewCandleDataset(c *client.Client, params CandleDatasetParams) (*CandleDataset, error) {
-	value, err := dataset.New(c, NewCandleCodec(), dataset.Params{
+	value, err := dataset.NewWithCompactionPolicy(c, NewCandleCodec(), dataset.Params{
 		Root:             params.Root,
 		PartitionColumns: []string{"asset_class", "venue", "instrument_type", "symbol", "timeframe", "date"},
 		FileName:         params.FileName,
 		WriteMode:        params.WriteMode,
-	})
+	}, candleCompactionPolicy{})
 	if err != nil {
 		return nil, err
 	}

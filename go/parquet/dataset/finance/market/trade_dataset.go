@@ -26,7 +26,7 @@ type TradeDataset struct{ dataset *dataset.Dataset[Trade] }
 // Version:
 //   - 2026-08-16: Added.
 func NewTradeDataset(c *client.Client, params TradeDatasetParams) (*TradeDataset, error) {
-	value, err := dataset.New(c, NewTradeCodec(), dataset.Params{Root: params.Root, PartitionColumns: intradayPartitionColumns(), FileName: params.FileName, WriteMode: params.WriteMode})
+	value, err := dataset.NewWithCompactionPolicy(c, NewTradeCodec(), dataset.Params{Root: params.Root, PartitionColumns: intradayPartitionColumns(), FileName: params.FileName, WriteMode: params.WriteMode}, tradeCompactionPolicy{})
 	if err != nil {
 		return nil, err
 	}
