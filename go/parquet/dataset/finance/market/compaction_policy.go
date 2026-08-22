@@ -11,6 +11,56 @@ type bboCompactionPolicy struct{}
 
 type ammExecutableQuoteCompactionPolicy struct{}
 
+type ammSwapCompactionPolicy struct{}
+
+func (ammSwapCompactionPolicy) Compare(left, right AMMSwap) int {
+	if value := left.EventTimestamp.Compare(right.EventTimestamp); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.SwapID, right.SwapID); value != 0 {
+		return value
+	}
+	if value := left.ReceivedTimestamp.Compare(right.ReceivedTimestamp); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.Chain, right.Chain); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.PoolID, right.PoolID); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.TransactionID, right.TransactionID); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.EventIndex, right.EventIndex); value != 0 {
+		return value
+	}
+	if value := compareOptionalString(left.StateReferenceType, right.StateReferenceType); value != 0 {
+		return value
+	}
+	if value := compareOptionalString(left.StateReferenceValue, right.StateReferenceValue); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.Side, right.Side); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.Price, right.Price); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.BaseQuantity, right.BaseQuantity); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.QuoteQuantity, right.QuoteQuantity); value != 0 {
+		return value
+	}
+	return compareOptionalFloat64(left.EffectiveFeeRate, right.EffectiveFeeRate)
+}
+
+func (ammSwapCompactionPolicy) DeduplicationKey(record AMMSwap) (string, bool) {
+	swapID := strings.TrimSpace(record.SwapID)
+	return swapID, swapID != ""
+}
+
 func (ammExecutableQuoteCompactionPolicy) Compare(left, right AMMExecutableQuote) int {
 	if value := left.EventTimestamp.Compare(right.EventTimestamp); value != 0 {
 		return value
