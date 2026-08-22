@@ -35,6 +35,40 @@ func TestBBOCompactionSortsAndDeduplicatesExactRecords(t *testing.T) {
 	}
 }
 
+func TestAMMExecutableQuoteCompactionSortsAndDeduplicatesExactRecords(t *testing.T) {
+	parquetClient := newNormalizationTestClient(t)
+	value, err := NewAMMExecutableQuoteDataset(parquetClient, AMMExecutableQuoteDatasetParams{Root: "amm-executable-quotes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partition := normalizationIntradayPartition()
+	feeRate := 0.003
+	earlier := AMMExecutableQuote{
+		EventTimestamp: normalizationTime(1), ReceivedTimestamp: normalizationTime(1).Add(time.Millisecond),
+		Chain: "ethereum", PoolID: "pool-1", BidPrice: 100, BidQuantity: 1, AskPrice: 101, AskQuantity: 2,
+		EffectiveFeeRate: &feeRate, FeeIncluded: true,
+	}
+	later := earlier
+	later.EventTimestamp = normalizationTime(2)
+	later.ReceivedTimestamp = normalizationTime(2).Add(time.Millisecond)
+	later.BidPrice = 102
+	later.AskPrice = 103
+	writeNormalizationParts(t, value.Write, partition, []AMMExecutableQuote{later, earlier}, []AMMExecutableQuote{earlier})
+
+	result, err := value.Compact(context.Background(), AMMExecutableQuoteCompactParams{Partition: partition, TargetFileSizeBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNormalizationCounts(t, result, 3, 2, 1)
+	read, err := value.Read(context.Background(), AMMExecutableQuoteReadParams{Partition: partition})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Records) != 2 || !read.Records[0].EventTimestamp.Equal(earlier.EventTimestamp) || !read.Records[1].EventTimestamp.Equal(later.EventTimestamp) {
+		t.Fatalf("AMM executable quote records = %+v, want chronological unique records", read.Records)
+	}
+}
+
 func TestTradeCompactionSortsAndDeduplicatesByTradeID(t *testing.T) {
 	parquetClient := newNormalizationTestClient(t)
 	value, err := NewTradeDataset(parquetClient, TradeDatasetParams{Root: "trades"})

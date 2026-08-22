@@ -37,12 +37,12 @@ type AMMExecutableQuoteDataset struct {
 // Version:
 //   - 2026-08-22: Added.
 func NewAMMExecutableQuoteDataset(c *client.Client, params AMMExecutableQuoteDatasetParams) (*AMMExecutableQuoteDataset, error) {
-	value, err := dataset.New(c, NewAMMExecutableQuoteCodec(), dataset.Params{
+	value, err := dataset.NewWithCompactionPolicy(c, NewAMMExecutableQuoteCodec(), dataset.Params{
 		Root:             params.Root,
 		PartitionColumns: intradayPartitionColumns(),
 		FileName:         params.FileName,
 		WriteMode:        params.WriteMode,
-	})
+	}, ammExecutableQuoteCompactionPolicy{})
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +52,7 @@ func NewAMMExecutableQuoteDataset(c *client.Client, params AMMExecutableQuoteDat
 // Write writes one AMM executable quote Parquet part.
 //
 // Version:
+//   - 2026-08-22: Applied chronological ordering and exact-record deduplication during compaction.
 //   - 2026-08-22: Added.
 func (d *AMMExecutableQuoteDataset) Write(ctx context.Context, params AMMExecutableQuoteWriteParams) (AMMExecutableQuoteWriteResult, error) {
 	return d.dataset.Write(ctx, params)
