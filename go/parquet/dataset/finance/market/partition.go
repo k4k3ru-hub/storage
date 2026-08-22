@@ -18,3 +18,7 @@ const (
 func intradayPartitionColumns() []string {
 	return []string{"asset_class", "venue", "instrument_type", "symbol", "date", "hour"}
 }
+
+func ammPoolMetadataPartitionColumns() []string {
+	return []string{"asset_class", "venue"}
+}

@@ -16,6 +16,7 @@ type OpenInterestPriceType string
 const (
 	OpenInterestPriceTypeMark          OpenInterestPriceType = "mark"
 	OpenInterestPriceTypeIndex         OpenInterestPriceType = "index"
+	OpenInterestPriceTypeOracle        OpenInterestPriceType = "oracle"
 	OpenInterestPriceTypeVenueReported OpenInterestPriceType = "venue_reported"
 )
 

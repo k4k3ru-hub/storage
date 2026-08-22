@@ -89,7 +89,7 @@ func TestAdditionalCodecsBatchRoundTrip(t *testing.T) {
 				EventTimestamp: event, ReceivedTimestamp: received,
 				RawQuantity: 23456750, RawUnit: OpenInterestUnitContracts,
 				Quantity: 23456.75, NotionalValue: 2760000000, NotionalCurrency: "USDT",
-				ConversionPrice: &conversionPrice, ConversionPriceType: OpenInterestPriceTypeMark,
+				ConversionPrice: &conversionPrice, ConversionPriceType: OpenInterestPriceTypeOracle,
 				ContractSize: &contractSize,
 			},
 			{
