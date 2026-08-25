@@ -722,6 +722,28 @@ func (t UsageCreditType) IsValid() bool {
 	}
 }
 
+// String returns the usage credit type as a string.
+//
+// Returns:
+//   - Usage credit type name, or an empty string when invalid.
+//
+// Version:
+//   - 2026-08-25: Added.
+func (t UsageCreditType) String() string {
+	switch t {
+	case UsageCreditTypePurchased:
+		return "purchased"
+	case UsageCreditTypeCampaign:
+		return "campaign"
+	case UsageCreditTypeCompensation:
+		return "compensation"
+	case UsageCreditTypeAdjustment:
+		return "adjustment"
+	default:
+		return ""
+	}
+}
+
 //
 // Validate validates the usage credit type.
 //
