@@ -35,6 +35,92 @@ func TestBBOCompactionSortsAndDeduplicatesExactRecords(t *testing.T) {
 	}
 }
 
+func TestFundingRateCompactionSortsAndDeduplicatesExactRecords(t *testing.T) {
+	parquetClient := newNormalizationTestClient(t)
+	value, err := NewFundingRateDataset(parquetClient, FundingRateDatasetParams{Root: "funding-rates"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partition := normalizationIntradayPartition()
+	markPrice := 100.0
+	indexPrice := 99.5
+	earlier := FundingRate{
+		EventTimestamp:    normalizationTime(1),
+		ReceivedTimestamp: normalizationTime(1).Add(time.Millisecond),
+		FundingTimestamp:  normalizationTime(1).Add(8 * time.Hour),
+		Rate:              0.0001,
+		Kind:              FundingRateKindCurrentEstimate,
+		IntervalMinutes:   480,
+		MarkPrice:         &markPrice,
+		IndexPrice:        &indexPrice,
+	}
+	later := earlier
+	later.EventTimestamp = normalizationTime(2)
+	later.ReceivedTimestamp = normalizationTime(2).Add(time.Millisecond)
+	later.Rate = 0.0002
+	sameFundingObservationReceivedLater := earlier
+	sameFundingObservationReceivedLater.ReceivedTimestamp = earlier.ReceivedTimestamp.Add(time.Second)
+	writeNormalizationParts(t, value.Write, partition, []FundingRate{later, earlier}, []FundingRate{earlier, sameFundingObservationReceivedLater})
+
+	result, err := value.Compact(context.Background(), FundingRateCompactParams{Partition: partition, TargetFileSizeBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNormalizationCounts(t, result, 4, 3, 1)
+	read, err := value.Read(context.Background(), FundingRateReadParams{Partition: partition})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Records) != 3 || !read.Records[0].ReceivedTimestamp.Equal(earlier.ReceivedTimestamp) || !read.Records[1].ReceivedTimestamp.Equal(sameFundingObservationReceivedLater.ReceivedTimestamp) || !read.Records[2].EventTimestamp.Equal(later.EventTimestamp) {
+		t.Fatalf("Funding Rate records = %+v, want chronological records with only exact duplicates removed", read.Records)
+	}
+}
+
+func TestOpenInterestCompactionSortsAndDeduplicatesExactRecords(t *testing.T) {
+	parquetClient := newNormalizationTestClient(t)
+	value, err := NewOpenInterestDataset(parquetClient, OpenInterestDatasetParams{Root: "open-interest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partition := normalizationIntradayPartition()
+	conversionPrice := 100.0
+	conversionPriceTimestamp := normalizationTime(1)
+	earlier := OpenInterest{
+		EventTimestamp:           normalizationTime(1),
+		ReceivedTimestamp:        normalizationTime(1).Add(time.Millisecond),
+		RawQuantity:              10,
+		RawUnit:                  OpenInterestUnitBaseAsset,
+		Quantity:                 10,
+		NotionalValue:            1000,
+		NotionalCurrency:         "USD",
+		ConversionPrice:          &conversionPrice,
+		ConversionPriceType:      OpenInterestPriceTypeMark,
+		ConversionPriceTimestamp: &conversionPriceTimestamp,
+	}
+	later := earlier
+	later.EventTimestamp = normalizationTime(2)
+	later.ReceivedTimestamp = normalizationTime(2).Add(time.Millisecond)
+	later.RawQuantity = 11
+	later.Quantity = 11
+	later.NotionalValue = 1100
+	sameObservationReceivedLater := earlier
+	sameObservationReceivedLater.ReceivedTimestamp = earlier.ReceivedTimestamp.Add(time.Second)
+	writeNormalizationParts(t, value.Write, partition, []OpenInterest{later, earlier}, []OpenInterest{earlier, sameObservationReceivedLater})
+
+	result, err := value.Compact(context.Background(), OpenInterestCompactParams{Partition: partition, TargetFileSizeBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNormalizationCounts(t, result, 4, 3, 1)
+	read, err := value.Read(context.Background(), OpenInterestReadParams{Partition: partition})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Records) != 3 || !read.Records[0].ReceivedTimestamp.Equal(earlier.ReceivedTimestamp) || !read.Records[1].ReceivedTimestamp.Equal(sameObservationReceivedLater.ReceivedTimestamp) || !read.Records[2].EventTimestamp.Equal(later.EventTimestamp) {
+		t.Fatalf("Open Interest records = %+v, want chronological records with only exact duplicates removed", read.Records)
+	}
+}
+
 func TestAMMExecutableQuoteCompactionSortsAndDeduplicatesExactRecords(t *testing.T) {
 	parquetClient := newNormalizationTestClient(t)
 	value, err := NewAMMExecutableQuoteDataset(parquetClient, AMMExecutableQuoteDatasetParams{Root: "amm-executable-quotes"})

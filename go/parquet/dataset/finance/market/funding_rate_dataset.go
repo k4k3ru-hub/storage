@@ -3,6 +3,7 @@ package market
 
 import (
 	"context"
+
 	"github.com/k4k3ru-hub/storage/go/parquet/client"
 	"github.com/k4k3ru-hub/storage/go/parquet/dataset"
 )
@@ -23,10 +24,16 @@ type FundingRateDataset struct{ dataset *dataset.Dataset[FundingRate] }
 // NewFundingRateDataset creates a perpetual funding-rate dataset.
 //
 // Version:
+//   - 2026-08-26: Added deterministic ordering and exact-record deduplication during compaction.
 //   - 2026-08-19: Composed the funding observation schema.
 //   - 2026-08-16: Added.
 func NewFundingRateDataset(c *client.Client, params FundingRateDatasetParams) (*FundingRateDataset, error) {
-	value, err := dataset.New(c, NewFundingRateCodec(), dataset.Params{Root: params.Root, PartitionColumns: intradayPartitionColumns(), FileName: params.FileName, WriteMode: params.WriteMode})
+	value, err := dataset.NewWithCompactionPolicy(c, NewFundingRateCodec(), dataset.Params{
+		Root:             params.Root,
+		PartitionColumns: intradayPartitionColumns(),
+		FileName:         params.FileName,
+		WriteMode:        params.WriteMode,
+	}, fundingRateCompactionPolicy{})
 	if err != nil {
 		return nil, err
 	}

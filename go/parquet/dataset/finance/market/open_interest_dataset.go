@@ -3,6 +3,7 @@ package market
 
 import (
 	"context"
+
 	"github.com/k4k3ru-hub/storage/go/parquet/client"
 	"github.com/k4k3ru-hub/storage/go/parquet/dataset"
 )
@@ -25,10 +26,16 @@ type OpenInterestDataset struct {
 // NewOpenInterestDataset creates an open-interest observation dataset.
 //
 // Version:
+//   - 2026-08-26: Added deterministic ordering and exact-record deduplication during compaction.
 //   - 2026-08-19: Composed the normalized OpenInterest schema.
 //   - 2026-08-16: Added.
 func NewOpenInterestDataset(c *client.Client, params OpenInterestDatasetParams) (*OpenInterestDataset, error) {
-	value, err := dataset.New(c, NewOpenInterestCodec(), dataset.Params{Root: params.Root, PartitionColumns: intradayPartitionColumns(), FileName: params.FileName, WriteMode: params.WriteMode})
+	value, err := dataset.NewWithCompactionPolicy(c, NewOpenInterestCodec(), dataset.Params{
+		Root:             params.Root,
+		PartitionColumns: intradayPartitionColumns(),
+		FileName:         params.FileName,
+		WriteMode:        params.WriteMode,
+	}, openInterestCompactionPolicy{})
 	if err != nil {
 		return nil, err
 	}
