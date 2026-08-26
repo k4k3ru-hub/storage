@@ -84,13 +84,17 @@ func TestAdditionalCodecsBatchRoundTrip(t *testing.T) {
 	t.Run("open_interest", func(t *testing.T) {
 		conversionPrice := 117664.19
 		contractSize := 0.001
+		contractSizeUnit := ContractSizeUnitBaseAsset
+		contractSizeCurrency := "BTC"
 		assertBatchRoundTrip(t, NewOpenInterestCodec(), []OpenInterest{
 			{
 				EventTimestamp: event, ReceivedTimestamp: received,
 				RawQuantity: 23456750, RawUnit: OpenInterestUnitContracts,
 				Quantity: 23456.75, NotionalValue: 2760000000, NotionalCurrency: "USDT",
 				ConversionPrice: &conversionPrice, ConversionPriceType: OpenInterestPriceTypeOracle,
-				ContractSize: &contractSize,
+				ConversionPriceTimestamp: &event,
+				ContractSize:             &contractSize, ContractSizeUnit: &contractSizeUnit,
+				ContractSizeCurrency: &contractSizeCurrency,
 			},
 			{
 				EventTimestamp: event.Add(time.Second), ReceivedTimestamp: received.Add(time.Second),

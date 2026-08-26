@@ -48,16 +48,18 @@ func TestAdditionalDatasetsWriteRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			conversionPrice := 117664.19
+			conversionPriceTimestamp := event.Add(-time.Millisecond)
 			want := []OpenInterest{{
-				EventTimestamp:      event,
-				ReceivedTimestamp:   received,
-				RawQuantity:         23456.75,
-				RawUnit:             OpenInterestUnitBaseAsset,
-				Quantity:            23456.75,
-				NotionalValue:       2760000000,
-				NotionalCurrency:    "USDC",
-				ConversionPrice:     &conversionPrice,
-				ConversionPriceType: OpenInterestPriceTypeMark,
+				EventTimestamp:           event,
+				ReceivedTimestamp:        received,
+				RawQuantity:              23456.75,
+				RawUnit:                  OpenInterestUnitBaseAsset,
+				Quantity:                 23456.75,
+				NotionalValue:            2760000000,
+				NotionalCurrency:         "USDC",
+				ConversionPrice:          &conversionPrice,
+				ConversionPriceType:      OpenInterestPriceTypeMark,
+				ConversionPriceTimestamp: &conversionPriceTimestamp,
 			}}
 			if _, err := d.Write(context.Background(), OpenInterestWriteParams{Partition: partition, Records: want}); err != nil {
 				t.Fatal(err)

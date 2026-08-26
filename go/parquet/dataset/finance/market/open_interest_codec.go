@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/k4k3ru-hub/storage/go/parquet/dataset"
 	parquetgo "github.com/parquet-go/parquet-go"
@@ -13,16 +14,19 @@ import (
 
 type OpenInterestCodec struct{}
 type openInterestRow struct {
-	EventTimestamp      int64    `parquet:"event_timestamp,timestamp(microsecond)"`
-	ReceivedTimestamp   int64    `parquet:"received_timestamp,timestamp(microsecond)"`
-	RawQuantity         float64  `parquet:"raw_quantity"`
-	RawUnit             string   `parquet:"raw_unit"`
-	Quantity            float64  `parquet:"quantity"`
-	NotionalValue       float64  `parquet:"notional_value"`
-	NotionalCurrency    string   `parquet:"notional_currency"`
-	ConversionPrice     *float64 `parquet:"conversion_price,optional"`
-	ConversionPriceType string   `parquet:"conversion_price_type"`
-	ContractSize        *float64 `parquet:"contract_size,optional"`
+	EventTimestamp           int64    `parquet:"event_timestamp,timestamp(microsecond)"`
+	ReceivedTimestamp        int64    `parquet:"received_timestamp,timestamp(microsecond)"`
+	RawQuantity              float64  `parquet:"raw_quantity"`
+	RawUnit                  string   `parquet:"raw_unit"`
+	Quantity                 float64  `parquet:"quantity"`
+	NotionalValue            float64  `parquet:"notional_value"`
+	NotionalCurrency         string   `parquet:"notional_currency"`
+	ConversionPrice          *float64 `parquet:"conversion_price,optional"`
+	ConversionPriceType      string   `parquet:"conversion_price_type"`
+	ConversionPriceTimestamp *int64   `parquet:"conversion_price_timestamp,timestamp(microsecond),optional"`
+	ContractSize             *float64 `parquet:"contract_size,optional"`
+	ContractSizeUnit         *string  `parquet:"contract_size_unit,optional"`
+	ContractSizeCurrency     *string  `parquet:"contract_size_currency,optional"`
 }
 
 // NewOpenInterestCodec creates an OpenInterest Parquet codec.
@@ -127,31 +131,57 @@ func (*OpenInterestCodec) Decode(ctx context.Context, source dataset.ReadSource,
 }
 
 func openInterestToRow(record OpenInterest) openInterestRow {
+	var conversionPriceTimestamp *int64
+	if record.ConversionPriceTimestamp != nil {
+		value := record.ConversionPriceTimestamp.UnixMicro()
+		conversionPriceTimestamp = &value
+	}
+	var contractSizeUnit *string
+	if record.ContractSizeUnit != nil {
+		value := string(*record.ContractSizeUnit)
+		contractSizeUnit = &value
+	}
 	return openInterestRow{
-		EventTimestamp:      record.EventTimestamp.UnixMicro(),
-		ReceivedTimestamp:   record.ReceivedTimestamp.UnixMicro(),
-		RawQuantity:         record.RawQuantity,
-		RawUnit:             string(record.RawUnit),
-		Quantity:            record.Quantity,
-		NotionalValue:       record.NotionalValue,
-		NotionalCurrency:    record.NotionalCurrency,
-		ConversionPrice:     record.ConversionPrice,
-		ConversionPriceType: string(record.ConversionPriceType),
-		ContractSize:        record.ContractSize,
+		EventTimestamp:           record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp:        record.ReceivedTimestamp.UnixMicro(),
+		RawQuantity:              record.RawQuantity,
+		RawUnit:                  string(record.RawUnit),
+		Quantity:                 record.Quantity,
+		NotionalValue:            record.NotionalValue,
+		NotionalCurrency:         record.NotionalCurrency,
+		ConversionPrice:          record.ConversionPrice,
+		ConversionPriceType:      string(record.ConversionPriceType),
+		ConversionPriceTimestamp: conversionPriceTimestamp,
+		ContractSize:             record.ContractSize,
+		ContractSizeUnit:         contractSizeUnit,
+		ContractSizeCurrency:     record.ContractSizeCurrency,
 	}
 }
 
 func openInterestFromRow(row openInterestRow) OpenInterest {
+	var conversionPriceTimestamp *time.Time
+	if row.ConversionPriceTimestamp != nil {
+		value := timeFromUnixMicro(*row.ConversionPriceTimestamp)
+		conversionPriceTimestamp = &value
+	}
+	var contractSizeUnit *ContractSizeUnit
+	if row.ContractSizeUnit != nil {
+		value := ContractSizeUnit(*row.ContractSizeUnit)
+		contractSizeUnit = &value
+	}
 	return OpenInterest{
-		EventTimestamp:      timeFromUnixMicro(row.EventTimestamp),
-		ReceivedTimestamp:   timeFromUnixMicro(row.ReceivedTimestamp),
-		RawQuantity:         row.RawQuantity,
-		RawUnit:             OpenInterestUnit(row.RawUnit),
-		Quantity:            row.Quantity,
-		NotionalValue:       row.NotionalValue,
-		NotionalCurrency:    row.NotionalCurrency,
-		ConversionPrice:     row.ConversionPrice,
-		ConversionPriceType: OpenInterestPriceType(row.ConversionPriceType),
-		ContractSize:        row.ContractSize,
+		EventTimestamp:           timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp:        timeFromUnixMicro(row.ReceivedTimestamp),
+		RawQuantity:              row.RawQuantity,
+		RawUnit:                  OpenInterestUnit(row.RawUnit),
+		Quantity:                 row.Quantity,
+		NotionalValue:            row.NotionalValue,
+		NotionalCurrency:         row.NotionalCurrency,
+		ConversionPrice:          row.ConversionPrice,
+		ConversionPriceType:      OpenInterestPriceType(row.ConversionPriceType),
+		ConversionPriceTimestamp: conversionPriceTimestamp,
+		ContractSize:             row.ContractSize,
+		ContractSizeUnit:         contractSizeUnit,
+		ContractSizeCurrency:     row.ContractSizeCurrency,
 	}
 }
