@@ -12,15 +12,15 @@ import (
 
 type FundingRateCodec struct{}
 type fundingRateRow struct {
-	EventTimestamp     int64    `parquet:"event_timestamp,timestamp(microsecond)"`
-	ReceivedTimestamp  int64    `parquet:"received_timestamp,timestamp(microsecond)"`
-	EffectiveTimestamp int64    `parquet:"effective_timestamp,timestamp(microsecond)"`
-	Rate               float64  `parquet:"rate"`
-	Kind               string   `parquet:"kind"`
-	IntervalMinutes    int32    `parquet:"interval_minutes"`
-	MarkPrice          *float64 `parquet:"mark_price,optional"`
-	IndexPrice         *float64 `parquet:"index_price,optional"`
-	PremiumRate        *float64 `parquet:"premium_rate,optional"`
+	EventTimestamp    int64    `parquet:"event_timestamp,timestamp(microsecond)"`
+	ReceivedTimestamp int64    `parquet:"received_timestamp,timestamp(microsecond)"`
+	FundingTimestamp  int64    `parquet:"funding_timestamp,timestamp(microsecond)"`
+	Rate              float64  `parquet:"rate"`
+	Kind              string   `parquet:"kind"`
+	IntervalMinutes   int32    `parquet:"interval_minutes"`
+	MarkPrice         *float64 `parquet:"mark_price,optional"`
+	IndexPrice        *float64 `parquet:"index_price,optional"`
+	PremiumRate       *float64 `parquet:"premium_rate,optional"`
 }
 
 // NewFundingRateCodec creates a FundingRate Parquet codec.
@@ -126,28 +126,28 @@ func (*FundingRateCodec) Decode(ctx context.Context, source dataset.ReadSource, 
 
 func fundingRateToRow(record FundingRate) fundingRateRow {
 	return fundingRateRow{
-		EventTimestamp:     record.EventTimestamp.UnixMicro(),
-		ReceivedTimestamp:  record.ReceivedTimestamp.UnixMicro(),
-		EffectiveTimestamp: record.EffectiveTimestamp.UnixMicro(),
-		Rate:               record.Rate,
-		Kind:               string(record.Kind),
-		IntervalMinutes:    record.IntervalMinutes,
-		MarkPrice:          record.MarkPrice,
-		IndexPrice:         record.IndexPrice,
-		PremiumRate:        record.PremiumRate,
+		EventTimestamp:    record.EventTimestamp.UnixMicro(),
+		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
+		FundingTimestamp:  record.FundingTimestamp.UnixMicro(),
+		Rate:              record.Rate,
+		Kind:              string(record.Kind),
+		IntervalMinutes:   record.IntervalMinutes,
+		MarkPrice:         record.MarkPrice,
+		IndexPrice:        record.IndexPrice,
+		PremiumRate:       record.PremiumRate,
 	}
 }
 
 func fundingRateFromRow(row fundingRateRow) FundingRate {
 	return FundingRate{
-		EventTimestamp:     timeFromUnixMicro(row.EventTimestamp),
-		ReceivedTimestamp:  timeFromUnixMicro(row.ReceivedTimestamp),
-		EffectiveTimestamp: timeFromUnixMicro(row.EffectiveTimestamp),
-		Rate:               row.Rate,
-		Kind:               FundingRateKind(row.Kind),
-		IntervalMinutes:    row.IntervalMinutes,
-		MarkPrice:          row.MarkPrice,
-		IndexPrice:         row.IndexPrice,
-		PremiumRate:        row.PremiumRate,
+		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
+		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
+		FundingTimestamp:  timeFromUnixMicro(row.FundingTimestamp),
+		Rate:              row.Rate,
+		Kind:              FundingRateKind(row.Kind),
+		IntervalMinutes:   row.IntervalMinutes,
+		MarkPrice:         row.MarkPrice,
+		IndexPrice:        row.IndexPrice,
+		PremiumRate:       row.PremiumRate,
 	}
 }

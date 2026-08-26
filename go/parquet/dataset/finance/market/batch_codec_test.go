@@ -105,13 +105,13 @@ func TestAdditionalCodecsBatchRoundTrip(t *testing.T) {
 		premiumRate := 0.00005
 		assertBatchRoundTrip(t, NewFundingRateCodec(), []FundingRate{
 			{
-				EventTimestamp: event, ReceivedTimestamp: received, EffectiveTimestamp: event.Add(time.Hour),
+				EventTimestamp: event, ReceivedTimestamp: received, FundingTimestamp: event.Add(time.Hour),
 				Rate: 0.0001, Kind: FundingRateKindCurrentEstimate, IntervalMinutes: 60,
 				MarkPrice: &markPrice, IndexPrice: &indexPrice, PremiumRate: &premiumRate,
 			},
 			{
 				EventTimestamp: event.Add(time.Second), ReceivedTimestamp: received.Add(time.Second),
-				EffectiveTimestamp: event.Add(2 * time.Hour), Rate: 0.00011,
+				FundingTimestamp: event.Add(2 * time.Hour), Rate: 0.00011,
 				Kind: FundingRateKindSettled, IntervalMinutes: 480,
 			},
 		})

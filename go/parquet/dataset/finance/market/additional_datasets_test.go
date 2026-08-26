@@ -79,15 +79,15 @@ func TestAdditionalDatasetsWriteRead(t *testing.T) {
 			indexPrice := 117995.0
 			premiumRate := 0.00005
 			want := []FundingRate{{
-				EventTimestamp:     event,
-				ReceivedTimestamp:  received,
-				EffectiveTimestamp: event.Add(time.Hour),
-				Rate:               0.0001,
-				Kind:               FundingRateKindCurrentEstimate,
-				IntervalMinutes:    60,
-				MarkPrice:          &markPrice,
-				IndexPrice:         &indexPrice,
-				PremiumRate:        &premiumRate,
+				EventTimestamp:    event,
+				ReceivedTimestamp: received,
+				FundingTimestamp:  event.Add(time.Hour),
+				Rate:              0.0001,
+				Kind:              FundingRateKindCurrentEstimate,
+				IntervalMinutes:   60,
+				MarkPrice:         &markPrice,
+				IndexPrice:        &indexPrice,
+				PremiumRate:       &premiumRate,
 			}}
 			if _, err := d.Write(context.Background(), FundingRateWriteParams{Partition: partition, Records: want}); err != nil {
 				t.Fatal(err)
