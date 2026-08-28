@@ -1,6 +1,4 @@
-//
 // product_test.go
-//
 package app
 
 import (
@@ -70,6 +68,31 @@ func TestProductTypeValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.got != tt.want {
 				t.Fatalf("product type = %d, want %d", tt.got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProductTypeString(t *testing.T) {
+	tests := []struct {
+		name        string
+		productType ProductType
+		want        string
+	}{
+		{name: "system", productType: ProductTypeSystem, want: "system"},
+		{name: "general", productType: ProductTypeGeneral, want: "general"},
+		{name: "campaign", productType: ProductTypeCampaign, want: "campaign"},
+		{name: "trial", productType: ProductTypeTrial, want: "trial"},
+		{name: "unknown", productType: ProductType(255), want: "unknown"},
+	}
+
+	for _, tt := range tests {
+		testCase := tt
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := testCase.productType.String(); got != testCase.want {
+				t.Fatalf("String() = %q, want %q", got, testCase.want)
 			}
 		})
 	}

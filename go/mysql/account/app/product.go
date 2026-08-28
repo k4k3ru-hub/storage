@@ -1,6 +1,4 @@
-//
 // product.go
-//
 package app
 
 import (
@@ -859,6 +857,28 @@ func (s *ProductStatus) Scan(value any) error {
 // Version:
 //   - 2026-08-12: Added.
 func (t ProductType) IsValid() bool { return t >= ProductTypeSystem && t <= ProductTypeTrial }
+
+// String returns the product type name.
+//
+// Returns:
+//   - Product type name, or "unknown" when unsupported.
+//
+// Version:
+//   - 2026-08-28: Added.
+func (t ProductType) String() string {
+	switch t {
+	case ProductTypeSystem:
+		return "system"
+	case ProductTypeGeneral:
+		return "general"
+	case ProductTypeCampaign:
+		return "campaign"
+	case ProductTypeTrial:
+		return "trial"
+	default:
+		return "unknown"
+	}
+}
 
 // Validate validates the product type.
 //
