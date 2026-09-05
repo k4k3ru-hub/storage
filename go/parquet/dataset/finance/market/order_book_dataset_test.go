@@ -50,13 +50,19 @@ func TestOrderBookDatasetWriteRead(t *testing.T) {
 	}
 }
 
-func TestOrderBookCompactionPolicyDeduplicatesVersion(t *testing.T) {
+func TestOrderBookCompactionPolicyDeduplicatesPublishedVersion(t *testing.T) {
 	policy := orderBookCompactionPolicy{}
-	left := OrderBook{VenueSymbol: "BTCUSDT", Version: 7}
-	right := OrderBook{VenueSymbol: "BTCUSDT", Version: 7}
+	publishedAt := time.Date(2026, 9, 5, 3, 4, 5, 6000, time.UTC)
+	left := OrderBook{VenueSymbol: "BTCUSDT", PublishedTimestamp: publishedAt, Version: 7}
+	right := OrderBook{VenueSymbol: "BTCUSDT", PublishedTimestamp: publishedAt, Version: 7}
 	leftKey, leftOK := policy.DeduplicationKey(left)
 	rightKey, rightOK := policy.DeduplicationKey(right)
 	if !leftOK || !rightOK || leftKey != rightKey {
 		t.Fatalf("deduplication keys = (%q, %t), (%q, %t)", leftKey, leftOK, rightKey, rightOK)
+	}
+	restarted := OrderBook{VenueSymbol: "BTCUSDT", PublishedTimestamp: publishedAt.Add(time.Second), Version: 7}
+	restartedKey, restartedOK := policy.DeduplicationKey(restarted)
+	if !restartedOK || restartedKey == leftKey {
+		t.Fatalf("restarted deduplication key = (%q, %t), want key distinct from %q", restartedKey, restartedOK, leftKey)
 	}
 }

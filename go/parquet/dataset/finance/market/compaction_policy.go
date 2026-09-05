@@ -34,10 +34,10 @@ func (orderBookCompactionPolicy) Compare(left, right OrderBook) int {
 }
 
 func (orderBookCompactionPolicy) DeduplicationKey(record OrderBook) (string, bool) {
-	if strings.TrimSpace(record.VenueSymbol) == "" || record.Version == 0 {
+	if strings.TrimSpace(record.VenueSymbol) == "" || record.PublishedTimestamp.IsZero() || record.Version == 0 {
 		return "", false
 	}
-	return fmt.Sprintf("%q:%d", record.VenueSymbol, record.Version), true
+	return fmt.Sprintf("%q:%d:%d", record.VenueSymbol, record.PublishedTimestamp.UnixMicro(), record.Version), true
 }
 
 func (ammSwapCompactionPolicy) Compare(left, right AMMSwap) int {
