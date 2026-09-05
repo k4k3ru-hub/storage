@@ -18,6 +18,28 @@ type ammExecutableQuoteCompactionPolicy struct{}
 
 type ammSwapCompactionPolicy struct{}
 
+type orderBookCompactionPolicy struct{}
+
+func (orderBookCompactionPolicy) Compare(left, right OrderBook) int {
+	if value := left.EventTimestamp.Compare(right.EventTimestamp); value != 0 {
+		return value
+	}
+	if value := left.ReceivedTimestamp.Compare(right.ReceivedTimestamp); value != 0 {
+		return value
+	}
+	if value := left.PublishedTimestamp.Compare(right.PublishedTimestamp); value != 0 {
+		return value
+	}
+	return cmp.Compare(left.Version, right.Version)
+}
+
+func (orderBookCompactionPolicy) DeduplicationKey(record OrderBook) (string, bool) {
+	if strings.TrimSpace(record.VenueSymbol) == "" || record.Version == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("%q:%d", record.VenueSymbol, record.Version), true
+}
+
 func (ammSwapCompactionPolicy) Compare(left, right AMMSwap) int {
 	if value := left.EventTimestamp.Compare(right.EventTimestamp); value != 0 {
 		return value
