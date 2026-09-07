@@ -14,4 +14,9 @@ const (
 	ColLockedUntil              = "locked_until"
 	ColCreatedAt                = "created_at"
 	ColUpdatedAt                = "updated_at"
+	ColSessionTokenHash         = "session_token_hash"
+	ColSubject                  = "subject"
+	ColLastActivityAt           = "last_activity_at"
+	ColAbsoluteExpiresAt        = "absolute_expires_at"
+	ColRevokedAt                = "revoked_at"
 )
