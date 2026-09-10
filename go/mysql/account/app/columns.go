@@ -1,12 +1,9 @@
-//
 // columns.go
-//
 package app
 
 const (
 	ColAccountID     = "account_id"
 	ColBalanceTicks  = "balance_ticks"
-	ColBonusTicks    = "bonus_ticks"
 	ColCreatedAt     = "created_at"
 	ColCreditTicks   = "credit_ticks"
 	ColCreditID      = "credit_id"

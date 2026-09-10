@@ -22,15 +22,17 @@ import (
 
 const DefaultProductTableName = "account_app_products"
 
+const productSelectColumns = "id, name, status, type, credit_ticks, price_amount, price_currency, expires_in_days, purchase_limit, description, meta_data, created_at, updated_at"
+
 var productIDGenerator = &k4k3ruInternalGenerator.ID{}
 
 type Product struct {
-	ID            uint64
-	Name          string
-	Status        ProductStatus
-	Type          ProductType
+	ID     uint64
+	Name   string
+	Status ProductStatus
+	Type   ProductType
+	// CreditTicks is the total grant, including all product incentives.
 	CreditTicks   uint64
-	BonusTicks    uint64
 	PriceAmount   uint64
 	PriceCurrency PriceCurrency
 	ExpiresInDays uint32
@@ -70,12 +72,12 @@ type ProductStore struct {
 }
 
 type ProductInsertParams struct {
-	ID            uint64
-	Name          string
-	Status        ProductStatus
-	Type          ProductType
+	ID     uint64
+	Name   string
+	Status ProductStatus
+	Type   ProductType
+	// CreditTicks is the total grant, including all product incentives.
 	CreditTicks   uint64
-	BonusTicks    uint64
 	PriceAmount   uint64
 	PriceCurrency PriceCurrency
 	ExpiresInDays uint32
@@ -94,8 +96,6 @@ type ProductSelectParams struct {
 	TypeNE         *ProductType
 	CreditTicksGTE *uint64
 	CreditTicksLTE *uint64
-	BonusTicksGTE  *uint64
-	BonusTicksLTE  *uint64
 	PriceAmountGTE *uint64
 	PriceAmountLTE *uint64
 	PriceCurrency  *PriceCurrency
@@ -114,7 +114,6 @@ type ProductUpdateParams struct {
 	Status             *ProductStatus
 	Type               *ProductType
 	CreditTicks        *uint64
-	BonusTicks         *uint64
 	PriceAmount        *uint64
 	PriceCurrency      *PriceCurrency
 	ExpiresInDays      *uint32
@@ -325,6 +324,7 @@ func (p *Product) ValidateMetaData() error {
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (s *ProductStore) CreateTable(ctx context.Context, executor k4k3ruAPI.Executor) error {
 	operationErr := "failed to create account app product table"
 	if err := s.validate(ctx, executor, operationErr); err != nil {
@@ -337,8 +337,7 @@ func (s *ProductStore) CreateTable(ctx context.Context, executor k4k3ruAPI.Execu
             %s VARCHAR(128) NOT NULL COMMENT 'Name',
             %s TINYINT UNSIGNED NOT NULL COMMENT 'Status',
             %s TINYINT UNSIGNED NOT NULL COMMENT 'Type',
-            %s BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Credit ticks',
-            %s BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Bonus ticks',
+            %s BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Total credit ticks including product incentives',
             %s BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Price amount',
             %s VARCHAR(16) NOT NULL COMMENT 'Price currency',
             %s INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Expires in days',
@@ -353,7 +352,7 @@ func (s *ProductStore) CreateTable(ctx context.Context, executor k4k3ruAPI.Execu
             KEY idx_account_app_products_type (%s),
             KEY idx_account_app_products_price_currency (%s)
         ) ENGINE = InnoDB DEFAULT CHARACTER SET = utf8mb4;`,
-		s.tableName, ColID, ColName, ColStatus, ColType, ColCreditTicks, ColBonusTicks,
+		s.tableName, ColID, ColName, ColStatus, ColType, ColCreditTicks,
 		ColPriceAmount, ColPriceCurrency, ColExpiresInDays, ColPurchaseLimit,
 		ColDescription, ColMetaData, ColCreatedAt, ColUpdatedAt, ColID, ColName,
 		ColStatus, ColType, ColPriceCurrency,
@@ -368,6 +367,7 @@ func (s *ProductStore) CreateTable(ctx context.Context, executor k4k3ruAPI.Execu
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (s *ProductStore) Insert(ctx context.Context, executor k4k3ruAPI.Executor, params *ProductInsertParams) error {
 	operationErr := "failed to insert account app product"
 	if err := s.validate(ctx, executor, operationErr); err != nil {
@@ -391,13 +391,13 @@ func (s *ProductStore) Insert(ctx context.Context, executor k4k3ruAPI.Executor, 
 		queryPrefix = "INSERT IGNORE"
 	}
 	query := fmt.Sprintf(
-		"%s INTO %s (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+		"%s INTO %s (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
 		queryPrefix, s.tableName, ColID, ColName, ColStatus, ColType, ColCreditTicks,
-		ColBonusTicks, ColPriceAmount, ColPriceCurrency, ColExpiresInDays,
+		ColPriceAmount, ColPriceCurrency, ColExpiresInDays,
 		ColPurchaseLimit, ColDescription, ColMetaData, ColCreatedAt,
 	)
 	if _, err := executor.ExecContext(ctx, query, params.ID, params.Name, params.Status,
-		params.Type, params.CreditTicks, params.BonusTicks, params.PriceAmount,
+		params.Type, params.CreditTicks, params.PriceAmount,
 		params.PriceCurrency, params.ExpiresInDays, params.PurchaseLimit,
 		params.Description, params.MetaData, params.CreatedAt); err != nil {
 		var mysqlErr *mysql.MySQLError
@@ -413,6 +413,7 @@ func (s *ProductStore) Insert(ctx context.Context, executor k4k3ruAPI.Executor, 
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (s *ProductStore) SelectByID(ctx context.Context, executor k4k3ruAPI.Executor, id uint64) (*Product, error) {
 	operationErr := "failed to select account app product by id"
 	if err := s.validate(ctx, executor, operationErr); err != nil {
@@ -428,6 +429,7 @@ func (s *ProductStore) SelectByID(ctx context.Context, executor k4k3ruAPI.Execut
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (s *ProductStore) SelectByName(ctx context.Context, executor k4k3ruAPI.Executor, name string) (*Product, error) {
 	operationErr := "failed to select account app product by name"
 	if err := s.validate(ctx, executor, operationErr); err != nil {
@@ -443,6 +445,7 @@ func (s *ProductStore) SelectByName(ctx context.Context, executor k4k3ruAPI.Exec
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (s *ProductStore) Select(ctx context.Context, executor k4k3ruAPI.Executor, params ProductSelectParams) ([]*Product, error) {
 	operationErr := "failed to select account app products"
 	if err := s.validate(ctx, executor, operationErr); err != nil {
@@ -451,7 +454,7 @@ func (s *ProductStore) Select(ctx context.Context, executor k4k3ruAPI.Executor, 
 	if err := params.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", operationErr, err)
 	}
-	query, args := params.BuildQuery("SELECT * FROM " + s.tableName)
+	query, args := params.BuildQuery("SELECT " + productSelectColumns + " FROM " + s.tableName)
 	rows, err := executor.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", operationErr, err)
@@ -579,6 +582,7 @@ func (p *ProductInsertParams) Validate() error {
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (p ProductSelectParams) BuildQuery(selectFromClause string) (string, []any) {
 	var query strings.Builder
 	query.WriteString(selectFromClause)
@@ -608,12 +612,6 @@ func (p ProductSelectParams) BuildQuery(selectFromClause string) (string, []any)
 	}
 	if p.CreditTicksLTE != nil {
 		appendCondition(ColCreditTicks, "<=", *p.CreditTicksLTE)
-	}
-	if p.BonusTicksGTE != nil {
-		appendCondition(ColBonusTicks, ">=", *p.BonusTicksGTE)
-	}
-	if p.BonusTicksLTE != nil {
-		appendCondition(ColBonusTicks, "<=", *p.BonusTicksLTE)
 	}
 	if p.PriceAmountGTE != nil {
 		appendCondition(ColPriceAmount, ">=", *p.PriceAmountGTE)
@@ -658,6 +656,7 @@ func (p ProductSelectParams) BuildQuery(selectFromClause string) (string, []any)
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (p ProductSelectParams) Validate() error {
 	if p.ID != nil {
 		if err := ValidateProductID(*p.ID); err != nil {
@@ -695,9 +694,6 @@ func (p ProductSelectParams) Validate() error {
 	if p.CreditTicksGTE != nil && p.CreditTicksLTE != nil && *p.CreditTicksGTE > *p.CreditTicksLTE {
 		return fmt.Errorf("invalid parameter: credit_ticks_range=invalid")
 	}
-	if p.BonusTicksGTE != nil && p.BonusTicksLTE != nil && *p.BonusTicksGTE > *p.BonusTicksLTE {
-		return fmt.Errorf("invalid parameter: bonus_ticks_range=invalid")
-	}
 	if p.PriceAmountGTE != nil && p.PriceAmountLTE != nil && *p.PriceAmountGTE > *p.PriceAmountLTE {
 		return fmt.Errorf("invalid parameter: price_amount_range=invalid")
 	}
@@ -720,6 +716,7 @@ func (p ProductSelectParams) Validate() error {
 //
 // Version:
 //   - 2026-08-12: Added.
+//   - 2026-09-10: Use total credit ticks without a separate bonus field.
 func (p ProductUpdateParams) BuildAssignments() ([]string, []any) {
 	assignments := make([]string, 0, 11)
 	args := make([]any, 0, 11)
@@ -738,9 +735,6 @@ func (p ProductUpdateParams) BuildAssignments() ([]string, []any) {
 	}
 	if p.CreditTicks != nil {
 		appendAssignment(ColCreditTicks, *p.CreditTicks)
-	}
-	if p.BonusTicks != nil {
-		appendAssignment(ColBonusTicks, *p.BonusTicks)
 	}
 	if p.PriceAmount != nil {
 		appendAssignment(ColPriceAmount, *p.PriceAmount)
@@ -995,7 +989,7 @@ func (s *ProductStore) validate(ctx context.Context, executor k4k3ruAPI.Executor
 }
 
 func (s *ProductStore) selectOne(ctx context.Context, executor k4k3ruAPI.Executor, operationErr, condition string, arg any) (*Product, error) {
-	query := fmt.Sprintf("SELECT * FROM %s WHERE %s LIMIT 1;", s.tableName, condition)
+	query := fmt.Sprintf("SELECT %s FROM %s WHERE %s LIMIT 1;", productSelectColumns, s.tableName, condition)
 	product := &Product{}
 	if err := scanProduct(executor.QueryRowContext(ctx, query, arg), product); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1008,14 +1002,14 @@ func (s *ProductStore) selectOne(ctx context.Context, executor k4k3ruAPI.Executo
 
 func scanProduct(scanner productScanner, product *Product) error {
 	return scanner.Scan(&product.ID, &product.Name, &product.Status, &product.Type,
-		&product.CreditTicks, &product.BonusTicks, &product.PriceAmount,
+		&product.CreditTicks, &product.PriceAmount,
 		&product.PriceCurrency, &product.ExpiresInDays, &product.PurchaseLimit,
 		&product.Description, &product.MetaData, &product.CreatedAt, &product.UpdatedAt)
 }
 
 func isProductOrderByColumn(column string) bool {
 	switch column {
-	case ColID, ColName, ColStatus, ColType, ColCreditTicks, ColBonusTicks,
+	case ColID, ColName, ColStatus, ColType, ColCreditTicks,
 		ColPriceAmount, ColPriceCurrency, ColExpiresInDays, ColPurchaseLimit,
 		ColCreatedAt, ColUpdatedAt:
 		return true
