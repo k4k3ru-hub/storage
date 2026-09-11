@@ -51,10 +51,35 @@ func NewAMMSwapCodec() *AMMSwapCodec { return &AMMSwapCodec{} }
 //   - AMM swap batch reader.
 //
 // Version:
-//   - 2026-09-12: Support optional cancellation provenance columns.
+//   - 2026-09-12: Accept legacy additive schemas during compaction without relaxing other metadata checks.
 //   - 2026-08-22: Added.
 func (*AMMSwapCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[AMMSwap], error) {
-	return newBatchReader(ctx, source, size, ammSwapFromRow)
+	reader, err := newBatchReader(ctx, source, size, ammSwapFromRow)
+	if err != nil {
+		return nil, err
+	}
+	file, err := parquetgo.OpenFile(source, size)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("failed to inspect amm swap schema: %w", err), reader.Close())
+	}
+	// Only the three additive provenance columns may be absent. Preserve strict
+	// metadata checks for every other schema and compression difference.
+	if compatibleAMMSwapSchema(file.Schema()) {
+		r := reader.(*batchReader[AMMSwap, ammSwapRow])
+		r.info.SchemaFingerprint = fingerprint(parquetgo.SchemaOf(new(ammSwapRow)).String())
+		zstd := true
+		for _, group := range file.Metadata().RowGroups {
+			for _, column := range group.Columns {
+				if column.MetaData.Codec.String() != "ZSTD" {
+					zstd = false
+				}
+			}
+		}
+		if zstd {
+			r.info.CompressionFingerprint = fingerprint("amm_swap:zstd")
+		}
+	}
+	return reader, nil
 }
 
 // NewBatchWriter creates a bounded AMM swap Parquet writer.
@@ -156,4 +181,26 @@ func ammSwapFromRow(row ammSwapRow) AMMSwap {
 		Side: row.Side, Price: row.Price, BaseQuantity: row.BaseQuantity, QuoteQuantity: row.QuoteQuantity,
 		EffectiveFeeRate: row.EffectiveFeeRate,
 	}
+}
+
+func compatibleAMMSwapSchema(actual *parquetgo.Schema) bool {
+	expected := parquetgo.SchemaOf(new(ammSwapRow))
+	fields := make(map[string]parquetgo.Node)
+	for _, field := range expected.Fields() {
+		fields[field.Name()] = field
+	}
+	seen := make(map[string]bool)
+	for _, field := range actual.Fields() {
+		want, ok := fields[field.Name()]
+		if !ok || !parquetgo.EqualNodes(field, want) {
+			return false
+		}
+		seen[field.Name()] = true
+	}
+	for name := range fields {
+		if !seen[name] && name != "network" && name != "block_hash" && name != "removed" {
+			return false
+		}
+	}
+	return true
 }
