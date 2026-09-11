@@ -18,6 +18,9 @@ type ammSwapRow struct {
 	ReceivedTimestamp   int64    `parquet:"received_timestamp,timestamp(microsecond)"`
 	SwapID              string   `parquet:"swap_id"`
 	Chain               string   `parquet:"chain"`
+	Network             *string  `parquet:"network,optional"`
+	BlockHash           *string  `parquet:"block_hash,optional"`
+	Removed             bool     `parquet:"removed,optional"`
 	PoolID              string   `parquet:"pool_id"`
 	TransactionID       string   `parquet:"transaction_id"`
 	EventIndex          string   `parquet:"event_index"`
@@ -33,6 +36,7 @@ type ammSwapRow struct {
 // NewAMMSwapCodec creates an AMM swap Parquet codec.
 //
 // Version:
+//   - 2026-09-12: Support optional cancellation provenance columns.
 //   - 2026-08-22: Added.
 func NewAMMSwapCodec() *AMMSwapCodec { return &AMMSwapCodec{} }
 
@@ -47,6 +51,7 @@ func NewAMMSwapCodec() *AMMSwapCodec { return &AMMSwapCodec{} }
 //   - AMM swap batch reader.
 //
 // Version:
+//   - 2026-09-12: Support optional cancellation provenance columns.
 //   - 2026-08-22: Added.
 func (*AMMSwapCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[AMMSwap], error) {
 	return newBatchReader(ctx, source, size, ammSwapFromRow)
@@ -62,6 +67,7 @@ func (*AMMSwapCodec) NewBatchReader(ctx context.Context, source dataset.ReadSour
 //   - AMM swap batch writer.
 //
 // Version:
+//   - 2026-09-12: Support optional cancellation provenance columns.
 //   - 2026-08-22: Added.
 func (*AMMSwapCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[AMMSwap], error) {
 	return newBatchWriter(ctx, destination, ammSwapToRow)
@@ -70,6 +76,7 @@ func (*AMMSwapCodec) NewBatchWriter(ctx context.Context, destination io.Writer) 
 // Encode encodes AMM swap records as Apache Parquet.
 //
 // Version:
+//   - 2026-09-12: Support optional cancellation provenance columns.
 //   - 2026-08-22: Added.
 func (*AMMSwapCodec) Encode(ctx context.Context, destination io.Writer, records []AMMSwap) error {
 	rows := make([]ammSwapRow, len(records))
@@ -93,6 +100,7 @@ func (*AMMSwapCodec) Encode(ctx context.Context, destination io.Writer, records 
 // Decode decodes Apache Parquet into AMM swap records.
 //
 // Version:
+//   - 2026-09-12: Support optional cancellation provenance columns.
 //   - 2026-08-22: Added.
 func (*AMMSwapCodec) Decode(ctx context.Context, source dataset.ReadSource, size int64) ([]AMMSwap, error) {
 	file, err := parquetgo.OpenFile(source, size)
@@ -129,6 +137,7 @@ func (*AMMSwapCodec) Decode(ctx context.Context, source dataset.ReadSource, size
 func ammSwapToRow(record AMMSwap) ammSwapRow {
 	return ammSwapRow{
 		EventTimestamp: record.EventTimestamp.UnixMicro(), ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
+		Network: record.Network, BlockHash: record.BlockHash, Removed: record.Removed,
 		SwapID: record.SwapID, Chain: record.Chain, PoolID: record.PoolID,
 		TransactionID: record.TransactionID, EventIndex: record.EventIndex,
 		StateReferenceType: record.StateReferenceType, StateReferenceValue: record.StateReferenceValue,
@@ -140,6 +149,7 @@ func ammSwapToRow(record AMMSwap) ammSwapRow {
 func ammSwapFromRow(row ammSwapRow) AMMSwap {
 	return AMMSwap{
 		EventTimestamp: timeFromUnixMicro(row.EventTimestamp), ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
+		Network: row.Network, BlockHash: row.BlockHash, Removed: row.Removed,
 		SwapID: row.SwapID, Chain: row.Chain, PoolID: row.PoolID,
 		TransactionID: row.TransactionID, EventIndex: row.EventIndex,
 		StateReferenceType: row.StateReferenceType, StateReferenceValue: row.StateReferenceValue,

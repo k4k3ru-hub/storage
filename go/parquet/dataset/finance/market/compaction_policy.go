@@ -80,12 +80,35 @@ func (ammSwapCompactionPolicy) Compare(left, right AMMSwap) int {
 	if value := cmp.Compare(left.QuoteQuantity, right.QuoteQuantity); value != 0 {
 		return value
 	}
+	if value := compareOptionalString(left.Network, right.Network); value != 0 {
+		return value
+	}
+	if value := compareOptionalString(left.BlockHash, right.BlockHash); value != 0 {
+		return value
+	}
+	if left.Removed != right.Removed {
+		if left.Removed {
+			return 1
+		}
+		return -1
+	}
 	return compareOptionalFloat64(left.EffectiveFeeRate, right.EffectiveFeeRate)
 }
 
 func (ammSwapCompactionPolicy) DeduplicationKey(record AMMSwap) (string, bool) {
 	swapID := strings.TrimSpace(record.SwapID)
-	return swapID, swapID != ""
+	if swapID == "" {
+		return "", false
+	}
+	optional := func(value *string) string {
+		if value == nil {
+			return "null"
+		}
+		return fmt.Sprintf("%q", *value)
+	}
+	return fmt.Sprintf("%q:%q:%s:%q:%q:%q:%s:%t", swapID, record.Chain,
+		optional(record.Network), record.PoolID, record.TransactionID, record.EventIndex,
+		optional(record.BlockHash), record.Removed), true
 }
 
 func (ammExecutableQuoteCompactionPolicy) Compare(left, right AMMExecutableQuote) int {
