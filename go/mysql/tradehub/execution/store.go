@@ -67,6 +67,7 @@ func NewDefaultStore() (*Store, error) {
 //   - params: Snapshot values.
 //
 // Version:
+//   - 2026-09-14: Store optional idempotency metadata, result snapshots, and nullable timestamps.
 //   - 2026-09-10: Added.
 func (s *Store) InsertExecution(ctx context.Context, executor k4k3ruStorageAPI.Executor, params ExecutionInsertParams) error {
 	const operation = "failed to insert trade hub execution"
@@ -79,8 +80,8 @@ func (s *Store) InsertExecution(ctx context.Context, executor k4k3ruStorageAPI.E
 	if err := params.Validate(); err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
 	}
-	query := fmt.Sprintf("INSERT INTO %s (id, status, kind, request_snapshot, conditions_snapshot, opportunity_snapshot, prepared_at, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);", s.executionTable)
-	_, err := executor.ExecContext(ctx, query, params.ID, params.Status, params.Kind, []byte(params.RequestSnapshot), nullableJSON(params.ConditionsSnapshot), nullableJSON(params.OpportunitySnapshot), params.PreparedAt.UTC(), params.ExpiresAt.UTC(), params.CreatedAt.UTC())
+	query := fmt.Sprintf("INSERT INTO %s (id, account_id, idempotency_key, status, kind, request_snapshot, conditions_snapshot, opportunity_snapshot, result_snapshot, prepared_at, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);", s.executionTable)
+	_, err := executor.ExecContext(ctx, query, params.ID, params.AccountID, params.IdempotencyKey, params.Status, params.Kind, []byte(params.RequestSnapshot), nullableJSON(params.ConditionsSnapshot), nullableJSON(params.OpportunitySnapshot), nullableJSON(params.ResultSnapshot), nullableTime(params.PreparedAt), nullableTime(params.ExpiresAt), params.CreatedAt.UTC())
 	return normalizeWriteError(operation, err)
 }
 
@@ -152,6 +153,7 @@ func (s *Store) InsertOnchainTransaction(ctx context.Context, executor k4k3ruSto
 //   - Selection error.
 //
 // Version:
+//   - 2026-09-14: Read idempotency metadata and map nullable timestamps to zero values.
 //   - 2026-09-10: Added.
 func (s *Store) SelectOnchainSubmissionForUpdate(ctx context.Context, tx *sql.Tx, executionID string) (*Execution, *Leg, *OnchainTransaction, error) {
 	const operation = "failed to select trade hub onchain submission for update"
@@ -167,7 +169,7 @@ func (s *Store) SelectOnchainSubmissionForUpdate(ctx context.Context, tx *sql.Tx
 	if strings.TrimSpace(executionID) == "" || len(executionID) > 64 {
 		return nil, nil, nil, fmt.Errorf("%s: execution_id=invalid", operation)
 	}
-	query := fmt.Sprintf(`SELECT e.id, e.status, e.kind, e.request_snapshot, e.conditions_snapshot, e.opportunity_snapshot, e.result_snapshot, e.prepared_at, e.expires_at, e.completed_at, e.created_at, e.updated_at,
+	query := fmt.Sprintf(`SELECT e.id, e.account_id, e.idempotency_key, e.status, e.kind, e.request_snapshot, e.conditions_snapshot, e.opportunity_snapshot, e.result_snapshot, e.prepared_at, e.expires_at, e.completed_at, e.created_at, e.updated_at,
 		l.id, l.execution_id, l.leg_index, l.category, l.status, l.venue, l.created_at, l.updated_at,
 		t.execution_leg_id, t.chain_family, t.chain, t.network, t.signer, t.payload_digest, t.transaction_id, t.block_number, t.gas_used, t.fee_amount, t.fee_asset, t.submission_started_at, t.submitted_at, t.confirmed_at, t.created_at, t.updated_at
 		FROM %s e JOIN %s l ON l.execution_id=e.id JOIN %s t ON t.execution_leg_id=l.id
@@ -176,14 +178,16 @@ func (s *Store) SelectOnchainSubmissionForUpdate(ctx context.Context, tx *sql.Tx
 	leg := new(Leg)
 	onchain := new(OnchainTransaction)
 	var conditions, opportunity, result []byte
+	var preparedAt, expiresAt sql.NullTime
 	err := tx.QueryRowContext(ctx, query, executionID, LegCategoryOnchainTransaction).Scan(
-		&execution.ID, &execution.Status, &execution.Kind, &execution.RequestSnapshot, &conditions, &opportunity, &result, &execution.PreparedAt, &execution.ExpiresAt, &execution.CompletedAt, &execution.CreatedAt, &execution.UpdatedAt,
+		&execution.ID, &execution.AccountID, &execution.IdempotencyKey, &execution.Status, &execution.Kind, &execution.RequestSnapshot, &conditions, &opportunity, &result, &preparedAt, &expiresAt, &execution.CompletedAt, &execution.CreatedAt, &execution.UpdatedAt,
 		&leg.ID, &leg.ExecutionID, &leg.LegIndex, &leg.Category, &leg.Status, &leg.Venue, &leg.CreatedAt, &leg.UpdatedAt,
 		&onchain.ExecutionLegID, &onchain.ChainFamily, &onchain.Chain, &onchain.Network, &onchain.Signer, &onchain.PayloadDigest, &onchain.TransactionID, &onchain.BlockNumber, &onchain.GasUsed, &onchain.FeeAmount, &onchain.FeeAsset, &onchain.SubmissionStartedAt, &onchain.SubmittedAt, &onchain.ConfirmedAt, &onchain.CreatedAt, &onchain.UpdatedAt,
 	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("%s: %w", operation, err)
 	}
+	execution.PreparedAt, execution.ExpiresAt = preparedAt.Time, expiresAt.Time
 	execution.ConditionsSnapshot, execution.OpportunitySnapshot, execution.ResultSnapshot = conditions, opportunity, result
 	return execution, leg, onchain, nil
 }
@@ -293,4 +297,11 @@ func requireOneRow(result sql.Result, err error, operation string) error {
 		return fmt.Errorf("%s: state_transition=conflict", operation)
 	}
 	return nil
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
 }

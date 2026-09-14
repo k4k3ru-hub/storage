@@ -21,6 +21,7 @@ const (
 	StatusCompleted
 	StatusFailed
 	StatusExpired
+	StatusPreparing
 )
 
 type LegCategory uint8
@@ -45,14 +46,16 @@ const (
 
 type Execution struct {
 	ID                  string
+	AccountID           *uint64
+	IdempotencyKey      []byte
 	Status              Status
 	Kind                string
 	RequestSnapshot     json.RawMessage
 	ConditionsSnapshot  json.RawMessage
 	OpportunitySnapshot json.RawMessage
 	ResultSnapshot      json.RawMessage
-	PreparedAt          time.Time
-	ExpiresAt           time.Time
+	PreparedAt          time.Time // Zero represents SQL NULL.
+	ExpiresAt           time.Time // Zero represents SQL NULL.
 	CompletedAt         *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -90,13 +93,16 @@ type OnchainTransaction struct {
 
 type ExecutionInsertParams struct {
 	ID                  string
+	AccountID           *uint64
+	IdempotencyKey      []byte
 	Status              Status
 	Kind                string
 	RequestSnapshot     json.RawMessage
 	ConditionsSnapshot  json.RawMessage
 	OpportunitySnapshot json.RawMessage
-	PreparedAt          time.Time
-	ExpiresAt           time.Time
+	ResultSnapshot      json.RawMessage
+	PreparedAt          time.Time // Zero represents SQL NULL.
+	ExpiresAt           time.Time // Zero represents SQL NULL.
 	CreatedAt           time.Time
 }
 
@@ -137,9 +143,10 @@ func GenerateExecutionLegID() uint64 {
 //   - Validation error.
 //
 // Version:
+//   - 2026-09-14: Accept the preparing state without renumbering existing states.
 //   - 2026-09-10: Added.
 func (s Status) Validate() error {
-	if s < StatusPrepared || s > StatusExpired {
+	if s < StatusPrepared || s > StatusPreparing {
 		return fmt.Errorf("failed to validate trade hub execution status: status=invalid")
 	}
 	return nil
@@ -179,6 +186,7 @@ func (s LegStatus) Validate() error {
 //   - Validation error.
 //
 // Version:
+//   - 2026-09-14: Validate optional idempotency metadata, result snapshots, and nullable timestamps.
 //   - 2026-09-10: Added.
 func (p ExecutionInsertParams) Validate() error {
 	if strings.TrimSpace(p.ID) == "" || len(p.ID) > 64 {
@@ -190,13 +198,22 @@ func (p ExecutionInsertParams) Validate() error {
 	if strings.TrimSpace(p.Kind) == "" || len(p.Kind) > 32 {
 		return fmt.Errorf("failed to validate trade hub execution insertion parameters: kind=invalid")
 	}
+	if p.AccountID != nil && *p.AccountID == 0 {
+		return fmt.Errorf("failed to validate trade hub execution insertion parameters: account_id=empty")
+	}
+	if p.IdempotencyKey != nil && len(p.IdempotencyKey) == 0 {
+		return fmt.Errorf("failed to validate trade hub execution insertion parameters: idempotency_key=empty")
+	}
+	if len(p.IdempotencyKey) > 128 {
+		return fmt.Errorf("failed to validate trade hub execution insertion parameters: idempotency_key=too_long actual_length=%d max_length=128", len(p.IdempotencyKey))
+	}
 	if !validJSONObject(p.RequestSnapshot) {
 		return fmt.Errorf("failed to validate trade hub execution insertion parameters: request_snapshot=invalid")
 	}
-	if !validOptionalJSONObject(p.ConditionsSnapshot) || !validOptionalJSONObject(p.OpportunitySnapshot) {
+	if !validOptionalJSONObject(p.ConditionsSnapshot) || !validOptionalJSONObject(p.OpportunitySnapshot) || !validOptionalJSONObject(p.ResultSnapshot) {
 		return fmt.Errorf("failed to validate trade hub execution insertion parameters: snapshot=invalid")
 	}
-	if p.PreparedAt.IsZero() || p.ExpiresAt.IsZero() || !p.ExpiresAt.After(p.PreparedAt) {
+	if !p.PreparedAt.IsZero() && !p.ExpiresAt.IsZero() && !p.ExpiresAt.After(p.PreparedAt) {
 		return fmt.Errorf("failed to validate trade hub execution insertion parameters: expires_at=out_of_range")
 	}
 	return nil

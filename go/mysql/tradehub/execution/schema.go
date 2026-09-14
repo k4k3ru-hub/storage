@@ -14,6 +14,7 @@ import (
 //   - executor: SQL executor.
 //
 // Version:
+//   - 2026-09-14: Add execution idempotency columns and nullable preparation timestamps.
 //   - 2026-09-10: Added.
 func (s *Store) CreateTables(ctx context.Context, executor k4k3ruStorageAPI.Executor) error {
 	const operation = "failed to create trade hub execution tables"
@@ -23,21 +24,24 @@ func (s *Store) CreateTables(ctx context.Context, executor k4k3ruStorageAPI.Exec
 	queries := []string{
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 			id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+			account_id BIGINT UNSIGNED DEFAULT NULL,
+			idempotency_key VARBINARY(128) DEFAULT NULL,
 			status TINYINT UNSIGNED NOT NULL,
 			kind VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
 			request_snapshot JSON NOT NULL,
 			conditions_snapshot JSON NULL,
 			opportunity_snapshot JSON NULL,
 			result_snapshot JSON NULL,
-			prepared_at DATETIME(6) NOT NULL,
-			expires_at DATETIME(6) NOT NULL,
+			prepared_at DATETIME(6) DEFAULT NULL,
+			expires_at DATETIME(6) DEFAULT NULL,
 			completed_at DATETIME(6) NULL,
 			created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 			updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
 			PRIMARY KEY (id),
+			UNIQUE KEY uk_trade_hub_executions_account_kind_idempotency (account_id, kind, idempotency_key),
 			KEY idx_trade_hub_executions_status_expires_at (status, expires_at),
 			KEY idx_trade_hub_executions_kind_created_at (kind, created_at)
-		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;`, s.executionTable),
+		) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_general_ci;`, s.executionTable),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 			id BIGINT UNSIGNED NOT NULL,
 			execution_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
