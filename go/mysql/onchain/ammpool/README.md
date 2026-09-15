@@ -5,8 +5,10 @@ source checkpoints. It has no dependency on a chain SDK or the public RPC DTOs.
 Inject an application-owned `*sql.DB` into `NewStore`; configure the MySQL driver
 with `parseTime=true` and use UTC. Constructors do not execute DDL.
 
-`schema.sql` is embedded by `Schema()` and `CreateTables`. An application migration
-must apply it before starting readers. Do not call CreateTables for each request.
+`schema.sql` is embedded by `Schema()` and `CreateTables`. `NewStoreWithTablePrefix(db, "market_hub_")` selects application-prefixed
+tables; `store.Schema()` returns the matching DDL. The original `NewStore(db)`
+retains the unprefixed names for compatibility. An application migration
+must apply the configured DDL before starting readers. Do not call CreateTables for each request.
 
 Identifiers and token IDs preserve case. Token IDs are TEXT because Sui coin type
 identifiers are not fixed-size EVM addresses. Pool IDs, event transaction IDs and
@@ -31,7 +33,7 @@ retention; once events expire, full reconstruction requires chain backfill.
 
 Amounts in protocol payloads must be decimal strings, never float64. Optional USD
 values use DECIMAL(38,18); unknown is NULL. No untrusted token name is used as a SQL
-identifier. Queries use fixed table names and bound values.
+identifier. Table prefixes are validated, identifiers are quoted, and values are bound parameters.
 
 Verification: `go test ./...`, `go vet ./...`. The MarketHub package contains an
 opt-in MySQL integration test covering DDL, stale writers, rollback and orphaning.
