@@ -1,0 +1,55 @@
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_snapshots (
+    id BINARY(32) NOT NULL,
+    chain_family VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    chain VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    network VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    venue VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    pool_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    token0_id TEXT CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    token1_id TEXT CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    pool_created_at DATETIME(6) NOT NULL,
+    first_liquidity_at DATETIME(6) NULL,
+    first_swap_at DATETIME(6) NULL,
+    liquidity_usd DECIMAL(38,18) NULL,
+    state JSON NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL,
+    is_canonical BOOLEAN NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_amm_pool_identity (chain_family, chain, network, venue, pool_id),
+    KEY idx_amm_pool_created (is_canonical, pool_created_at, id),
+    KEY idx_amm_pool_chain_created (chain, network, is_canonical, pool_created_at, id)
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_events (
+    id BINARY(32) NOT NULL,
+    pool_id BINARY(32) NOT NULL,
+    source_id BINARY(32) NOT NULL,
+    position_number BIGINT UNSIGNED NOT NULL,
+    position_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    transaction_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    event_index VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    event_type VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    occurred_at DATETIME(6) NOT NULL,
+    observed_at DATETIME(6) NOT NULL,
+    payload JSON NOT NULL,
+    is_canonical BOOLEAN NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_amm_pool_event_history (pool_id, position_number, id),
+    KEY idx_amm_pool_event_source (source_id, position_number),
+    KEY idx_amm_pool_event_retention (observed_at)
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_sync_cursors (
+    id BINARY(32) NOT NULL,
+    chain_family VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    chain VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    network VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    venue VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    source_key VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    position JSON NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_amm_pool_source (chain_family, chain, network, venue, source_key)
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
