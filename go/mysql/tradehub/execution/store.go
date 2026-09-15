@@ -202,6 +202,7 @@ func (s *Store) SelectOnchainSubmissionForUpdate(ctx context.Context, tx *sql.Tx
 //   - startedAt: Submission start time.
 //
 // Version:
+//   - 2026-09-15: Validate each table update separately within the transaction.
 //   - 2026-09-10: Added.
 func (s *Store) MarkOnchainSubmitting(ctx context.Context, tx *sql.Tx, executionID string, executionLegID uint64, startedAt time.Time) error {
 	const operation = "failed to mark trade hub onchain execution submitting"
@@ -215,7 +216,11 @@ func (s *Store) MarkOnchainSubmitting(ctx context.Context, tx *sql.Tx, execution
 	if err := requireOneRow(result, err, operation); err != nil {
 		return err
 	}
-	result, err = tx.ExecContext(ctx, fmt.Sprintf("UPDATE %s l JOIN %s t ON t.execution_leg_id=l.id SET l.status=?, t.submission_started_at=? WHERE l.id=? AND l.execution_id=? AND l.status IN (?, ?);", s.legTable, s.onchainTransactionTable), LegStatusSubmitting, startedAt.UTC(), executionLegID, executionID, LegStatusPrepared, LegStatusAwaitingSignature)
+	result, err = tx.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET status=? WHERE id=? AND execution_id=? AND status IN (?, ?);", s.legTable), LegStatusSubmitting, executionLegID, executionID, LegStatusPrepared, LegStatusAwaitingSignature)
+	if err := requireOneRow(result, err, operation); err != nil {
+		return err
+	}
+	result, err = tx.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET submission_started_at=? WHERE execution_leg_id=? AND submission_started_at IS NULL;", s.onchainTransactionTable), startedAt.UTC(), executionLegID)
 	return requireOneRow(result, err, operation)
 }
 
