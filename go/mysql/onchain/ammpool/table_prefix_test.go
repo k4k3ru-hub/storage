@@ -38,3 +38,16 @@ func TestTablePrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestSchemaUsesSnapshotOwnership verifies that deleting a snapshot deletes its event history.
+//
+// Version:
+//   - 2026-09-18: Added.
+func TestSchemaUsesSnapshotOwnership(t *testing.T) {
+	if !strings.Contains(schema, "FOREIGN KEY (pool_id) REFERENCES onchain_amm_pool_snapshots(id) ON DELETE CASCADE") {
+		t.Fatal("event ownership cascade missing")
+	}
+	if strings.Contains(schema, "ON UPDATE CASCADE") {
+		t.Fatal("identity update cascade must not be enabled")
+	}
+}

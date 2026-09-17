@@ -108,6 +108,7 @@ func (s *Store) Cursor(ctx context.Context, source Source) (Cursor, error) {
 //
 // Version:
 //   - 2026-09-16: Added.
+//   - 2026-09-18: Save snapshots before events to satisfy snapshot ownership constraints.
 func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 	if err = b.Validate(); err != nil {
 		return fmt.Errorf("failed to commit amm pool batch: %w", err)
@@ -136,16 +137,6 @@ func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 	if revision != c.Revision {
 		return fmt.Errorf("failed to commit amm pool batch: %w", ErrCursorConflict)
 	}
-	for _, e := range b.Events {
-		id, pid := e.ID(), e.Pool.ID()
-		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO onchain_amm_pool_events
-  (id,pool_id,source_id,position_number,position_id,transaction_id,event_index,event_type,occurred_at,observed_at,payload,is_canonical)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE is_canonical=VALUES(is_canonical)`),
-			id[:], pid[:], sourceID[:], e.PositionNumber, e.PositionID, e.TransactionID, e.Index, e.Type, e.OccurredAt.UTC(), e.ObservedAt.UTC(), []byte(e.Payload), e.Canonical)
-		if err != nil {
-			return fmt.Errorf("failed to save amm pool event: %w", err)
-		}
-	}
 	for _, p := range b.Snapshots {
 		id := p.Identity.ID()
 		i := p.Identity
@@ -158,6 +149,16 @@ func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 			id[:], i.ChainFamily, i.Chain, i.Network, i.Venue, i.PoolID, p.Token0ID, p.Token1ID, p.CreatedAt.UTC(), utc(p.FirstLiquidityAt), utc(p.FirstSwapAt), p.LiquidityUSD, []byte(p.State), p.Canonical, p.UpdatedAt.UTC())
 		if err != nil {
 			return fmt.Errorf("failed to save amm pool snapshot: %w", err)
+		}
+	}
+	for _, e := range b.Events {
+		id, pid := e.ID(), e.Pool.ID()
+		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO onchain_amm_pool_events
+	  (id,pool_id,source_id,position_number,position_id,transaction_id,event_index,event_type,occurred_at,observed_at,payload,is_canonical)
+	  VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE is_canonical=VALUES(is_canonical)`),
+			id[:], pid[:], sourceID[:], e.PositionNumber, e.PositionID, e.TransactionID, e.Index, e.Type, e.OccurredAt.UTC(), e.ObservedAt.UTC(), []byte(e.Payload), e.Canonical)
+		if err != nil {
+			return fmt.Errorf("failed to save amm pool event: %w", err)
 		}
 	}
 	_, err = tx.ExecContext(ctx, s.query("UPDATE onchain_amm_pool_sync_cursors SET position=?,revision=revision+1,updated_at=? WHERE id=?"), []byte(c.Position), c.UpdatedAt.UTC(), sourceID[:])
@@ -203,12 +204,13 @@ func (s *Store) Get(ctx context.Context, i Identity) (Snapshot, error) {
 	return p, nil
 }
 
-// Load returns retained canonical snapshots for restoration in deterministic order.
+// Load returns canonical snapshots whose lifecycle anchor is retained, in deterministic order.
 //
 // Version:
 //   - 2026-09-16: Added.
+//   - 2026-09-18: Select by first liquidity time when available.
 func (s *Store) Load(ctx context.Context, since time.Time) (result []Snapshot, err error) {
-	rows, err := s.db.QueryContext(ctx, s.query("SELECT "+snapshotColumns+" FROM onchain_amm_pool_snapshots WHERE is_canonical=1 AND pool_created_at>=? ORDER BY pool_created_at,id"), since.UTC())
+	rows, err := s.db.QueryContext(ctx, s.query("SELECT "+snapshotColumns+" FROM onchain_amm_pool_snapshots WHERE is_canonical=1 AND COALESCE(first_liquidity_at,pool_created_at)>=? ORDER BY COALESCE(first_liquidity_at,pool_created_at),id"), since.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load amm pool snapshots: %w", err)
 	}
@@ -231,13 +233,14 @@ func (s *Store) Load(ctx context.Context, since time.Time) (result []Snapshot, e
 	return result, nil
 }
 
-// Prune deletes expired history and snapshots in bounded batches; source cursors remain.
-// Event expiry does not imply that snapshots can be rebuilt without chain backfill.
+// Prune deletes expired history and lifecycle snapshots in bounded batches; source cursors remain.
+// Deleting a snapshot cascades to its event history.
 //
 // Version:
 //   - 2026-09-16: Added.
+//   - 2026-09-18: Prune snapshots by their lifecycle anchor.
 func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time) error {
-	if eventBefore.IsZero() || snapshotBefore.IsZero() || snapshotBefore.After(eventBefore) {
+	if eventBefore.IsZero() || snapshotBefore.IsZero() {
 		return fmt.Errorf("failed to prune amm pool history: retention=invalid")
 	}
 	for _, q := range []struct {
@@ -245,7 +248,7 @@ func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time
 		before time.Time
 	}{
 		{"DELETE FROM onchain_amm_pool_events WHERE observed_at<? LIMIT 1000", eventBefore},
-		{"DELETE FROM onchain_amm_pool_snapshots WHERE pool_created_at<? LIMIT 1000", snapshotBefore},
+		{"DELETE FROM onchain_amm_pool_snapshots WHERE COALESCE(first_liquidity_at,pool_created_at)<? LIMIT 1000", snapshotBefore},
 	} {
 		for batch := 0; batch < 100; batch++ {
 			result, err := s.db.ExecContext(ctx, s.query(q.sql), q.before.UTC())
@@ -254,7 +257,7 @@ func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time
 			}
 			count, err := result.RowsAffected()
 			if err != nil {
-				return fmt.Errorf("failed to read pruned event count: %w", err)
+				return fmt.Errorf("failed to read pruned row count: %w", err)
 			}
 			if count < 1000 {
 				break

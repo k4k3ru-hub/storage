@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_snapshots (
     PRIMARY KEY (id),
     UNIQUE KEY uk_amm_pool_identity (chain_family, chain, network, venue, pool_id),
     KEY idx_amm_pool_created (is_canonical, pool_created_at, id),
+    KEY idx_amm_pool_first_liquidity (is_canonical, first_liquidity_at, id),
     KEY idx_amm_pool_chain_created (chain, network, is_canonical, pool_created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_events (
     PRIMARY KEY (id),
     KEY idx_amm_pool_event_history (pool_id, position_number, id),
     KEY idx_amm_pool_event_source (source_id, position_number),
-    KEY idx_amm_pool_event_retention (observed_at)
+    KEY idx_amm_pool_event_retention (observed_at),
+    FOREIGN KEY (pool_id) REFERENCES onchain_amm_pool_snapshots(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS onchain_amm_pool_sync_cursors (
