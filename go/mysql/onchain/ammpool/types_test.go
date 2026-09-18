@@ -53,3 +53,33 @@ func TestCompositionRequiresDatabase(t *testing.T) {
 		t.Fatal("nil database accepted")
 	}
 }
+
+// TestVerificationValidation verifies NewPair confirmation behavior.
+//
+// Version:
+//   - 2026-09-18: Added.
+func TestVerificationValidation(t *testing.T) {
+	number := uint64(0)
+	id, kind := "0xabc", "block"
+	now := time.Now()
+	good := Verification{PositionKind: &kind, FirstLiquidityPositionNumber: &number, FirstLiquidityPositionID: &id, FirstSwapPositionNumber: &number, FirstSwapPositionID: &id, EventScanFromPosition: &number, EventScanThroughPosition: &number, EventScanThroughPositionID: &id, ConfirmedAt: &now}
+	if err := good.Validate(); err != nil {
+		t.Fatal("position zero must be valid", err)
+	}
+	if err := (Verification{}).Validate(); err != nil {
+		t.Fatal("legacy empty verification must be valid", err)
+	}
+	for _, mutate := range []func(*Verification){
+		func(v *Verification) { v.PositionKind = nil },
+		func(v *Verification) { v.FirstSwapPositionID = nil },
+		func(v *Verification) { v.EventScanFromPosition = nil },
+		func(v *Verification) { n := uint64(1); v.EventScanFromPosition = &n },
+		func(v *Verification) { n := uint64(1); v.FirstSwapPositionNumber = &n },
+	} {
+		v := good
+		mutate(&v)
+		if err := v.Validate(); err == nil {
+			t.Fatal("invalid verification accepted", v)
+		}
+	}
+}

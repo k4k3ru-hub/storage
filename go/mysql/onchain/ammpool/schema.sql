@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS onchain_amm_pool_snapshots (
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_snapshots (
     id BINARY(32) NOT NULL,
     chain_family VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     chain VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -10,6 +10,15 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_snapshots (
     pool_created_at DATETIME(6) NOT NULL,
     first_liquidity_at DATETIME(6) NULL,
     first_swap_at DATETIME(6) NULL,
+    position_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    first_liquidity_position_number BIGINT UNSIGNED NULL,
+    first_liquidity_position_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    first_swap_position_number BIGINT UNSIGNED NULL,
+    first_swap_position_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    event_scan_from_position BIGINT UNSIGNED NULL,
+    event_scan_through_position BIGINT UNSIGNED NULL,
+    event_scan_through_position_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    confirmed_at DATETIME(6) NULL,
     liquidity_usd DECIMAL(38,18) NULL,
     state JSON NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
@@ -22,7 +31,7 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_snapshots (
     KEY idx_amm_pool_chain_created (chain, network, is_canonical, pool_created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS onchain_amm_pool_events (
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_events (
     id BINARY(32) NOT NULL,
     pool_id BINARY(32) NOT NULL,
     source_id BINARY(32) NOT NULL,
@@ -39,10 +48,10 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_events (
     KEY idx_amm_pool_event_history (pool_id, position_number, id),
     KEY idx_amm_pool_event_source (source_id, position_number),
     KEY idx_amm_pool_event_retention (observed_at),
-    FOREIGN KEY (pool_id) REFERENCES onchain_amm_pool_snapshots(id) ON DELETE CASCADE
+    FOREIGN KEY (pool_id) REFERENCES onchain_amm_pool_new_pair_snapshots(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS onchain_amm_pool_sync_cursors (
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_sync_cursors (
     id BINARY(32) NOT NULL,
     chain_family VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     chain VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,

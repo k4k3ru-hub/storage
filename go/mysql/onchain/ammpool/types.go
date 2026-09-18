@@ -24,7 +24,20 @@ type Source struct {
 	Key         string
 }
 
+type Verification struct {
+	PositionKind                 *string
+	FirstLiquidityPositionNumber *uint64
+	FirstLiquidityPositionID     *string
+	FirstSwapPositionNumber      *uint64
+	FirstSwapPositionID          *string
+	EventScanFromPosition        *uint64
+	EventScanThroughPosition     *uint64
+	EventScanThroughPositionID   *string
+	ConfirmedAt                  *time.Time
+}
+
 type Snapshot struct {
+	Verification
 	Identity         Identity
 	Token0ID         string
 	Token1ID         string
@@ -135,6 +148,7 @@ func (s Source) Validate() error {
 //
 // Version:
 //   - 2026-09-16: Added.
+//   - 2026-09-18: Validate NewPair verification state.
 func (b Batch) Validate() error {
 	if err := b.Cursor.Source.Validate(); err != nil {
 		return fmt.Errorf("failed to validate amm pool batch: %w", err)
@@ -143,6 +157,12 @@ func (b Batch) Validate() error {
 		return fmt.Errorf("failed to validate amm pool batch: cursor=invalid")
 	}
 	for _, s := range b.Snapshots {
+		if err := s.Verification.Validate(); err != nil {
+			return fmt.Errorf("failed to validate amm pool batch: %w", err)
+		}
+		if s.ConfirmedAt != nil && (s.FirstLiquidityAt == nil || s.FirstSwapAt == nil || !s.Canonical) {
+			return fmt.Errorf("failed to validate amm pool batch: confirmed_snapshot=invalid")
+		}
 		if err := s.Identity.Validate(); err != nil {
 			return fmt.Errorf("failed to validate amm pool batch: %w", err)
 		}
@@ -162,4 +182,43 @@ func (b Batch) Validate() error {
 }
 func sameScope(i Identity, s Source) bool {
 	return i.ChainFamily == s.ChainFamily && i.Chain == s.Chain && i.Network == s.Network && i.Venue == s.Venue
+}
+
+// Validate checks persisted verification positions and contiguous scan bounds.
+//
+// Version:
+//   - 2026-09-18: Added.
+func (v Verification) Validate() error {
+	for _, p := range []struct {
+		number *uint64
+		id     *string
+	}{
+		{v.FirstLiquidityPositionNumber, v.FirstLiquidityPositionID},
+		{v.FirstSwapPositionNumber, v.FirstSwapPositionID},
+		{v.EventScanThroughPosition, v.EventScanThroughPositionID},
+	} {
+		if (p.number == nil) != (p.id == nil) || (p.id != nil && !validText(*p.id, 128)) {
+			return fmt.Errorf("failed to validate new pair verification: position=invalid")
+		}
+	}
+	if (v.EventScanFromPosition == nil) != (v.EventScanThroughPosition == nil) || (v.EventScanFromPosition != nil && *v.EventScanFromPosition > *v.EventScanThroughPosition) {
+		return fmt.Errorf("failed to validate new pair verification: scan_range=invalid")
+	}
+	if v.PositionKind == nil && (v.FirstLiquidityPositionNumber != nil || v.FirstSwapPositionNumber != nil || v.EventScanFromPosition != nil) {
+		return fmt.Errorf("failed to validate new pair verification: position_kind=null")
+	}
+	if v.PositionKind != nil && !validText(*v.PositionKind, 16) {
+		return fmt.Errorf("failed to validate new pair verification: position_kind=invalid")
+	}
+	if v.ConfirmedAt != nil {
+		if v.ConfirmedAt.IsZero() || v.FirstLiquidityPositionNumber == nil || v.FirstSwapPositionNumber == nil || v.EventScanThroughPosition == nil {
+			return fmt.Errorf("failed to validate new pair verification: confirmation=invalid")
+		}
+		for _, n := range []*uint64{v.FirstLiquidityPositionNumber, v.FirstSwapPositionNumber} {
+			if *n < *v.EventScanFromPosition || *n > *v.EventScanThroughPosition {
+				return fmt.Errorf("failed to validate new pair verification: confirmed_position=out_of_range")
+			}
+		}
+	}
+	return nil
 }

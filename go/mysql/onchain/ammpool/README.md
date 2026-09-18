@@ -1,13 +1,14 @@
-# AMM pool persistence
+# NewPair persistence
 
-This module owns chain-neutral pool snapshots, canonical event occurrences and
+This module owns chain-neutral NewPair snapshots, canonical event occurrences and
 source checkpoints. It has no dependency on a chain SDK or the public RPC DTOs.
 Inject an application-owned `*sql.DB` into `NewStore`; configure the MySQL driver
 with `parseTime=true` and use UTC. Constructors do not execute DDL.
 
 `schema.sql` is embedded by `Schema()` and `CreateTables`. `NewStoreWithTablePrefix(db, "market_hub_")` selects application-prefixed
 tables; `store.Schema()` returns the matching DDL. The original `NewStore(db)`
-retains the unprefixed names for compatibility. An application migration
+uses unprefixed `onchain_amm_pool_new_pair_*` names. This is a table-name change
+from the former `onchain_amm_pool_*` tables. An application migration
 must apply the configured DDL before starting readers. Do not call CreateTables for each request.
 
 Identifiers and token IDs preserve case. Token IDs are TEXT because Sui coin type
@@ -34,6 +35,13 @@ retention; once events expire, full reconstruction requires chain backfill.
 Amounts in protocol payloads must be decimal strings, never float64. Optional USD
 values use DECIMAL(38,18); unknown is NULL. No untrusted token name is used as a SQL
 identifier. Table prefixes are validated, identifiers are quoted, and values are bound parameters.
+
+Verification positions and contiguous scan bounds are normal nullable columns;
+`confirmed_at` records completion for the entire NewPair. `Events(source, since)`
+returns history only for canonical, unconfirmed snapshots whose lifecycle anchor
+is at or after `since`. It does not use `since` as an event observation cutoff.
+Confirmed snapshots are still returned by Get/Load. Deleting snapshots cascades
+to events; source cursors survive retention cleanup.
 
 Verification: `go test ./...`, `go vet ./...`. The MarketHub package contains an
 opt-in MySQL integration test covering DDL, stale writers, rollback and orphaning.
