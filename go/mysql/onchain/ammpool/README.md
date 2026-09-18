@@ -30,24 +30,56 @@ restarts and must not include RPC URLs or credentials.
 Retention cleanup is bounded to 100 batches of 1000 rows per table per call. The caller
 schedules cleanup and monitors failures/backlog. Cursors remain available even for
 blocks without events. Events and snapshots intentionally have independent
-retention; once events expire, full reconstruction requires chain backfill.
+retention. This module does not request chain backfill when events are missing.
 
 Amounts in protocol payloads must be decimal strings, never float64. Optional USD
 values use DECIMAL(38,18); unknown is NULL. No untrusted token name is used as a SQL
 identifier. Table prefixes are validated, identifiers are quoted, and values are bound parameters.
 
-Verification positions and contiguous scan bounds are normal nullable columns;
-`confirmed_at` records completion for the entire NewPair. `Events(source, since)`
-returns history only for canonical, unconfirmed, non-abandoned snapshots whose lifecycle anchor
-is at or after `since`. It does not use `since` as an event observation cutoff.
-Confirmed snapshots are still returned by Get/Load. Deleting snapshots cascades
-to events; source cursors survive retention cleanup.
+## Observation and evaluation schema (2026-09-19)
 
-Verification: `go test ./...`, `go vet ./...`. The MarketHub package contains an
-opt-in MySQL integration test covering DDL, stale writers, rollback and orphaning.
+`swap_observed_at` and `swap_observed_position_number/id` record an observed swap,
+not the first historical swap. `position_kind` identifies a block, slot or
+checkpoint. The timestamp and position are either all absent or all present.
+`confirmed_at` means the adapter confirmed that observed swap using the chain's
+confirmation policy. Confirmation requires an observed position and a canonical
+snapshot; it does not require liquidity evidence or a complete historical scan.
 
-`backfill_abandoned_at` records a pool whose initial-event backfill was abandoned.
-It is mutually exclusive with `confirmed_at`. Abandoned pools remain in Get/Load
-until lifecycle expiry, but Events excludes their history. The caller persists
-retry counters and source gap intervals in the existing cursor JSON atomically
-with snapshot changes. Apply the updated schema before using this version.
+`liquidity_usd` and `liquidity_evaluated_at` are either both NULL (unknown) or both
+present, including a known zero value. Keep the last successful value and time on
+refresh failure or expiry. Freshness and listing eligibility belong to the
+application; stale evaluations remain persistable. `state` holds the application's
+JSON projection, including valuation method and event transaction coordinates.
+The caller must keep that projection consistent with the relational fields.
+
+`Load(since)` selects canonical snapshots by `pool_created_at >= since`, ordered
+by creation time and identity. The application supplies `now - 24h` for NewPair.
+`Prune` uses creation time regardless of later swaps or valuation updates.
+`Events(source, since)` loads canonical history for canonical, unconfirmed pools
+created at or after `since`; it is not an event-observation-time cutoff. Confirmed
+pools remain available from Get/Load. `Get` itself does not apply age or listing
+rules. Deleting snapshots cascades to events; independent source cursors survive.
+
+This is a breaking schema/type update: first-liquidity fields, first-swap fields,
+historical event-scan bounds and backfill-abandonment fields are removed. There
+is no persisted listing status. The approved initial-migration workflow updates
+schema/001 rather than adding 002. `CREATE TABLE IF NOT EXISTS` does **not** upgrade
+existing tables. Update the application migration and callers together before
+using this version; no running database is changed by editing these files.
+
+Verification: `go test ./...`, `go vet ./...`.
+The optional `mysqlintegration` test exercises the new DDL, Commit/Get/Load,
+nullable updates, creation-based retention, cursor conflicts and cascade deletion.
+It uses a uniquely named temporary database, never application tables. Supply
+`AMMPOOL_TEST_DSN` with create/drop-database privileges and `parseTime=true`.
+The MySQL driver is test-only. From this module directory, prepare a temporary
+module file and run (supply the DSN via your environment, not a tracked file):
+
+```sh
+cp go.mod /tmp/ammpool-test.mod
+go mod edit -modfile=/tmp/ammpool-test.mod -require=github.com/go-sql-driver/mysql@v1.10.0
+go test -mod=mod -modfile=/tmp/ammpool-test.mod -tags=mysqlintegration -run TestMySQLObservationLifecycle -v
+```
+
+Validated on 2026-09-19: normal module tests/vet and the opt-in integration test
+passed against local Docker MySQL. Application tables were not modified.

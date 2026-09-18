@@ -61,6 +61,7 @@ func (s *Store) query(query string) string { return s.tableNames.Replace(query) 
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
+//   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 func (s *Store) Schema() string { return s.query(schema) }
 
 // Schema returns the version-one DDL for application migrations.
@@ -68,6 +69,7 @@ func (s *Store) Schema() string { return s.query(schema) }
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
+//   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 func Schema() string { return schema }
 
 // CreateTables applies initial DDL when explicitly called by a migration runner.
@@ -75,6 +77,7 @@ func Schema() string { return schema }
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
+//   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 func (s *Store) CreateTables(ctx context.Context) error {
 	for _, statement := range strings.Split(schema, ";") {
 		if strings.TrimSpace(statement) == "" {
@@ -116,6 +119,7 @@ func (s *Store) Cursor(ctx context.Context, source Source) (Cursor, error) {
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-18: Save snapshots before events to satisfy snapshot ownership constraints.
+//   - 2026-09-19: Use observed swap fields and creation-based retention.
 func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 	if err = b.Validate(); err != nil {
 		return fmt.Errorf("failed to commit amm pool batch: %w", err)
@@ -148,13 +152,13 @@ func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 		id := p.Identity.ID()
 		i := p.Identity
 		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO onchain_amm_pool_new_pair_snapshots
-  (id,chain_family,chain,network,venue,pool_id,token0_id,token1_id,pool_created_at,first_liquidity_at,first_swap_at,position_kind,first_liquidity_position_number,first_liquidity_position_id,first_swap_position_number,first_swap_position_id,event_scan_from_position,event_scan_through_position,event_scan_through_position_id,confirmed_at,backfill_abandoned_at,liquidity_usd,state,revision,is_canonical,updated_at)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?) ON DUPLICATE KEY UPDATE
+  (id,chain_family,chain,network,venue,pool_id,token0_id,token1_id,pool_created_at,swap_observed_at,position_kind,swap_observed_position_number,swap_observed_position_id,confirmed_at,liquidity_usd,liquidity_evaluated_at,state,revision,is_canonical,updated_at)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?) ON DUPLICATE KEY UPDATE
   token0_id=VALUES(token0_id),token1_id=VALUES(token1_id),pool_created_at=VALUES(pool_created_at),
-  first_liquidity_at=VALUES(first_liquidity_at),first_swap_at=VALUES(first_swap_at),liquidity_usd=VALUES(liquidity_usd),
-  position_kind=VALUES(position_kind),first_liquidity_position_number=VALUES(first_liquidity_position_number),first_liquidity_position_id=VALUES(first_liquidity_position_id),first_swap_position_number=VALUES(first_swap_position_number),first_swap_position_id=VALUES(first_swap_position_id),event_scan_from_position=VALUES(event_scan_from_position),event_scan_through_position=VALUES(event_scan_through_position),event_scan_through_position_id=VALUES(event_scan_through_position_id),confirmed_at=VALUES(confirmed_at),backfill_abandoned_at=VALUES(backfill_abandoned_at),
+  swap_observed_at=VALUES(swap_observed_at),liquidity_usd=VALUES(liquidity_usd),liquidity_evaluated_at=VALUES(liquidity_evaluated_at),
+  position_kind=VALUES(position_kind),swap_observed_position_number=VALUES(swap_observed_position_number),swap_observed_position_id=VALUES(swap_observed_position_id),confirmed_at=VALUES(confirmed_at),
   state=VALUES(state),revision=revision+1,is_canonical=VALUES(is_canonical),updated_at=VALUES(updated_at)`),
-			id[:], i.ChainFamily, i.Chain, i.Network, i.Venue, i.PoolID, p.Token0ID, p.Token1ID, p.CreatedAt.UTC(), utc(p.FirstLiquidityAt), utc(p.FirstSwapAt), p.PositionKind, p.FirstLiquidityPositionNumber, p.FirstLiquidityPositionID, p.FirstSwapPositionNumber, p.FirstSwapPositionID, p.EventScanFromPosition, p.EventScanThroughPosition, p.EventScanThroughPositionID, utc(p.ConfirmedAt), utc(p.BackfillAbandonedAt), p.LiquidityUSD, []byte(p.State), p.Canonical, p.UpdatedAt.UTC())
+			id[:], i.ChainFamily, i.Chain, i.Network, i.Venue, i.PoolID, p.Token0ID, p.Token1ID, p.CreatedAt.UTC(), utc(p.SwapObservedAt), p.PositionKind, p.SwapObservedPositionNumber, p.SwapObservedPositionID, utc(p.ConfirmedAt), p.LiquidityUSD, utc(p.LiquidityEvaluatedAt), []byte(p.State), p.Canonical, p.UpdatedAt.UTC())
 		if err != nil {
 			return fmt.Errorf("failed to save amm pool snapshot: %w", err)
 		}
@@ -186,13 +190,13 @@ func utc(t *time.Time) any {
 	return t.UTC()
 }
 
-const snapshotColumns = `chain_family,chain,network,venue,pool_id,token0_id,token1_id,pool_created_at,first_liquidity_at,first_swap_at,position_kind,first_liquidity_position_number,first_liquidity_position_id,first_swap_position_number,first_swap_position_id,event_scan_from_position,event_scan_through_position,event_scan_through_position_id,confirmed_at,backfill_abandoned_at,liquidity_usd,state,revision,is_canonical,updated_at`
+const snapshotColumns = `chain_family,chain,network,venue,pool_id,token0_id,token1_id,pool_created_at,swap_observed_at,position_kind,swap_observed_position_number,swap_observed_position_id,confirmed_at,liquidity_usd,liquidity_evaluated_at,state,revision,is_canonical,updated_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanSnapshot(row scanner) (Snapshot, error) {
 	var p Snapshot
-	err := row.Scan(&p.Identity.ChainFamily, &p.Identity.Chain, &p.Identity.Network, &p.Identity.Venue, &p.Identity.PoolID, &p.Token0ID, &p.Token1ID, &p.CreatedAt, &p.FirstLiquidityAt, &p.FirstSwapAt, &p.PositionKind, &p.FirstLiquidityPositionNumber, &p.FirstLiquidityPositionID, &p.FirstSwapPositionNumber, &p.FirstSwapPositionID, &p.EventScanFromPosition, &p.EventScanThroughPosition, &p.EventScanThroughPositionID, &p.ConfirmedAt, &p.BackfillAbandonedAt, &p.LiquidityUSD, &p.State, &p.Revision, &p.Canonical, &p.UpdatedAt)
+	err := row.Scan(&p.Identity.ChainFamily, &p.Identity.Chain, &p.Identity.Network, &p.Identity.Venue, &p.Identity.PoolID, &p.Token0ID, &p.Token1ID, &p.CreatedAt, &p.SwapObservedAt, &p.PositionKind, &p.SwapObservedPositionNumber, &p.SwapObservedPositionID, &p.ConfirmedAt, &p.LiquidityUSD, &p.LiquidityEvaluatedAt, &p.State, &p.Revision, &p.Canonical, &p.UpdatedAt)
 	return p, err
 }
 
@@ -201,6 +205,7 @@ func scanSnapshot(row scanner) (Snapshot, error) {
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
+//   - 2026-09-19: Use observed swap fields and creation-based retention.
 func (s *Store) Get(ctx context.Context, i Identity) (Snapshot, error) {
 	if err := i.Validate(); err != nil {
 		return Snapshot{}, fmt.Errorf("failed to get amm pool snapshot: %w", err)
@@ -213,14 +218,15 @@ func (s *Store) Get(ctx context.Context, i Identity) (Snapshot, error) {
 	return p, nil
 }
 
-// Load returns canonical snapshots whose lifecycle anchor is retained, in deterministic order.
+// Load returns canonical snapshots created at or after since, in deterministic order.
 //
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-18: Select by first liquidity time when available.
+//   - 2026-09-19: Use observed swap fields and creation-based retention.
 func (s *Store) Load(ctx context.Context, since time.Time) (result []Snapshot, err error) {
-	rows, err := s.db.QueryContext(ctx, s.query("SELECT "+snapshotColumns+" FROM onchain_amm_pool_new_pair_snapshots WHERE is_canonical=1 AND COALESCE(first_liquidity_at,pool_created_at)>=? ORDER BY COALESCE(first_liquidity_at,pool_created_at),id"), since.UTC())
+	rows, err := s.db.QueryContext(ctx, s.query("SELECT "+snapshotColumns+" FROM onchain_amm_pool_new_pair_snapshots WHERE is_canonical=1 AND pool_created_at>=? ORDER BY pool_created_at,id"), since.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load amm pool snapshots: %w", err)
 	}
@@ -243,13 +249,14 @@ func (s *Store) Load(ctx context.Context, since time.Time) (result []Snapshot, e
 	return result, nil
 }
 
-// Prune deletes expired history and lifecycle snapshots in bounded batches; source cursors remain.
+// Prune deletes expired history and snapshots by creation time in bounded batches; source cursors remain.
 // Deleting a snapshot cascades to its event history.
 //
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-18: Prune snapshots by their lifecycle anchor.
+//   - 2026-09-19: Use observed swap fields and creation-based retention.
 func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time) error {
 	if eventBefore.IsZero() || snapshotBefore.IsZero() {
 		return fmt.Errorf("failed to prune amm pool history: retention=invalid")
@@ -259,7 +266,7 @@ func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time
 		before time.Time
 	}{
 		{"DELETE FROM onchain_amm_pool_new_pair_events WHERE observed_at<? LIMIT 1000", eventBefore},
-		{"DELETE FROM onchain_amm_pool_new_pair_snapshots WHERE COALESCE(first_liquidity_at,pool_created_at)<? LIMIT 1000", snapshotBefore},
+		{"DELETE FROM onchain_amm_pool_new_pair_snapshots WHERE pool_created_at<? LIMIT 1000", snapshotBefore},
 	} {
 		for batch := 0; batch < 100; batch++ {
 			result, err := s.db.ExecContext(ctx, s.query(q.sql), q.before.UTC())
@@ -278,11 +285,12 @@ func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time
 	return nil
 }
 
-// Events loads canonical events of unconfirmed, non-abandoned lifecycle-retained pools.
+// Events loads canonical events of unconfirmed pools created at or after since.
 //
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
+//   - 2026-09-19: Use observed swap fields and creation-based retention.
 func (s *Store) Events(ctx context.Context, source Source, since time.Time) (out []Event, err error) {
 	if err = source.Validate(); err != nil {
 		return nil, fmt.Errorf("failed to load amm pool events: %w", err)
@@ -290,7 +298,7 @@ func (s *Store) Events(ctx context.Context, source Source, since time.Time) (out
 	id := source.ID()
 	rows, err := s.db.QueryContext(ctx, s.query(`SELECT p.chain_family,p.chain,p.network,p.venue,p.pool_id,e.position_number,e.position_id,e.transaction_id,e.event_index,e.event_type,e.occurred_at,e.observed_at,e.payload,e.is_canonical
  FROM onchain_amm_pool_new_pair_events e JOIN onchain_amm_pool_new_pair_snapshots p ON p.id=e.pool_id
- WHERE e.source_id=? AND e.is_canonical=1 AND p.is_canonical=1 AND p.confirmed_at IS NULL AND p.backfill_abandoned_at IS NULL AND COALESCE(p.first_liquidity_at,p.pool_created_at)>=? ORDER BY e.position_number,e.transaction_id,e.event_index`), id[:], since.UTC())
+ WHERE e.source_id=? AND e.is_canonical=1 AND p.is_canonical=1 AND p.confirmed_at IS NULL AND p.pool_created_at>=? ORDER BY e.position_number,e.transaction_id,e.event_index`), id[:], since.UTC())
 	if err != nil {
 		return nil, fmt.Errorf("failed to load amm pool events: %w", err)
 	}
