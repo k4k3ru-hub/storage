@@ -38,10 +38,16 @@ identifier. Table prefixes are validated, identifiers are quoted, and values are
 
 Verification positions and contiguous scan bounds are normal nullable columns;
 `confirmed_at` records completion for the entire NewPair. `Events(source, since)`
-returns history only for canonical, unconfirmed snapshots whose lifecycle anchor
+returns history only for canonical, unconfirmed, non-abandoned snapshots whose lifecycle anchor
 is at or after `since`. It does not use `since` as an event observation cutoff.
 Confirmed snapshots are still returned by Get/Load. Deleting snapshots cascades
 to events; source cursors survive retention cleanup.
 
 Verification: `go test ./...`, `go vet ./...`. The MarketHub package contains an
 opt-in MySQL integration test covering DDL, stale writers, rollback and orphaning.
+
+`backfill_abandoned_at` records a pool whose initial-event backfill was abandoned.
+It is mutually exclusive with `confirmed_at`. Abandoned pools remain in Get/Load
+until lifecycle expiry, but Events excludes their history. The caller persists
+retry counters and source gap intervals in the existing cursor JSON atomically
+with snapshot changes. Apply the updated schema before using this version.

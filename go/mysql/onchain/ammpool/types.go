@@ -25,6 +25,7 @@ type Source struct {
 }
 
 type Verification struct {
+	BackfillAbandonedAt          *time.Time
 	PositionKind                 *string
 	FirstLiquidityPositionNumber *uint64
 	FirstLiquidityPositionID     *string
@@ -187,8 +188,11 @@ func sameScope(i Identity, s Source) bool {
 // Validate checks persisted verification positions and contiguous scan bounds.
 //
 // Version:
-//   - 2026-09-18: Added.
+//   - 2026-09-18: Validate positions and mutually exclusive confirmation/abandonment.
 func (v Verification) Validate() error {
+	if v.BackfillAbandonedAt != nil && (v.BackfillAbandonedAt.IsZero() || v.ConfirmedAt != nil) {
+		return fmt.Errorf("failed to validate new pair verification: abandonment=invalid")
+	}
 	for _, p := range []struct {
 		number *uint64
 		id     *string

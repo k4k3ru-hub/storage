@@ -83,3 +83,21 @@ func TestVerificationValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestAbandonedVerificationRejectsConfirmation checks mutually exclusive terminal states.
+//
+// Version:
+//   - 2026-09-18: Added.
+func TestAbandonedVerificationRejectsConfirmation(t *testing.T) {
+	now := time.Now()
+	if err := (Verification{BackfillAbandonedAt: &now}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (Verification{BackfillAbandonedAt: &now, ConfirmedAt: &now}).Validate(); err == nil {
+		t.Fatal("confirmed and abandoned accepted")
+	}
+	zero := time.Time{}
+	if err := (Verification{BackfillAbandonedAt: &zero}).Validate(); err == nil {
+		t.Fatal("zero abandonment accepted")
+	}
+}

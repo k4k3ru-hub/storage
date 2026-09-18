@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_snapshots (
     event_scan_through_position BIGINT UNSIGNED NULL,
     event_scan_through_position_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
     confirmed_at DATETIME(6) NULL,
+    backfill_abandoned_at DATETIME(6) NULL,
     liquidity_usd DECIMAL(38,18) NULL,
     state JSON NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
