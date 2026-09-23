@@ -52,6 +52,8 @@ type Params struct {
 }
 
 // CompactionPolicy defines record ordering and equality for compaction.
+// A policy may also implement IncludeObject(string) bool to exclude reserved
+// mutable objects from immutable-part compaction.
 //
 // Version:
 //   - 2026-08-22: Added.

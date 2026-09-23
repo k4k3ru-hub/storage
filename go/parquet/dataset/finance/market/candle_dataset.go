@@ -3,6 +3,7 @@ package market
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/k4k3ru-hub/storage/go/parquet/client"
 	"github.com/k4k3ru-hub/storage/go/parquet/dataset"
@@ -12,6 +13,8 @@ type CandleDatasetParams struct {
 	Root      string
 	FileName  string
 	WriteMode dataset.WriteMode
+	// MaxRowsPerFile bounds decoding and encoding; zero preserves the default.
+	MaxRowsPerFile int64
 }
 
 type CandleWriteParams = dataset.WriteParams[Candle]
@@ -28,9 +31,13 @@ type CandleDataset struct {
 // NewCandleDataset creates a standard OHLCV Candle dataset.
 //
 // Version:
+//   - 2026-09-23: Support bounded files and additive execution aggregates.
 //   - 2026-08-14: Added.
 func NewCandleDataset(c *client.Client, params CandleDatasetParams) (*CandleDataset, error) {
-	value, err := dataset.NewWithCompactionPolicy(c, NewCandleCodec(), dataset.Params{
+	if params.MaxRowsPerFile < 0 {
+		return nil, fmt.Errorf("failed to create candle dataset: max_rows_per_file=out_of_range")
+	}
+	value, err := dataset.NewWithCompactionPolicy(c, &CandleCodec{maxRows: params.MaxRowsPerFile}, dataset.Params{
 		Root:             params.Root,
 		PartitionColumns: []string{"asset_class", "venue", "instrument_type", "symbol", "timeframe", "date"},
 		FileName:         params.FileName,
@@ -59,6 +66,7 @@ func (d *CandleDataset) Read(ctx context.Context, params CandleReadParams) (Cand
 }
 
 // Compact compacts immutable Candle Parquet parts in one partition.
+// Mutable files reserved by CandleSnapshotFilePrefix are excluded.
 //
 // Parameters:
 //   - ctx: Context for the operation.
@@ -68,6 +76,7 @@ func (d *CandleDataset) Read(ctx context.Context, params CandleReadParams) (Cand
 //   - Compaction result.
 //
 // Version:
+//   - 2026-09-23: Exclude mutable Candle snapshots and preserve additive columns.
 //   - 2026-08-18: Added.
 func (d *CandleDataset) Compact(ctx context.Context, params CandleCompactParams) (CandleCompactResult, error) {
 	return d.dataset.Compact(ctx, params)

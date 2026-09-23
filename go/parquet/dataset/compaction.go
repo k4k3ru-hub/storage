@@ -67,6 +67,7 @@ type compactionOutput struct {
 // fails, outputs are retained to avoid data loss.
 //
 // Version:
+//   - 2026-09-23: Honor dataset policies that exclude reserved mutable objects.
 //   - 2026-08-18: Added.
 func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result CompactResult, err error) {
 	operationErr := "failed to compact dataset"
@@ -229,6 +230,10 @@ func (d *Dataset[T]) compactionObjects(ctx context.Context, prefix string) ([]st
 	for iterator.Next(ctx) {
 		object := iterator.Object()
 		if path.Dir(object.Key) != prefix || !strings.HasSuffix(strings.ToLower(object.Key), ".parquet") {
+			continue
+		}
+		// Dataset-specific policies may reserve mutable snapshots from compaction.
+		if policy, ok := d.compactionPolicy.(interface{ IncludeObject(string) bool }); ok && !policy.IncludeObject(object.Key) {
 			continue
 		}
 		objects = append(objects, object)

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"math"
+	"path"
 	"strings"
 	"time"
 )
@@ -333,8 +334,29 @@ func (tradeCompactionPolicy) DeduplicationKey(record Trade) (string, bool) {
 
 type candleCompactionPolicy struct{}
 
+// IncludeObject excludes mutable Candle snapshots from immutable compaction.
+//
+// Version:
+//   - 2026-09-23: Added.
+func (candleCompactionPolicy) IncludeObject(key string) bool {
+	return !strings.HasPrefix(path.Base(key), CandleSnapshotFilePrefix)
+}
+
+// Compare orders immutable Candles by time, source and revision before OHLCV.
+//
+// Version:
+//   - 2026-09-23: Preserve execution source and revision isolation.
 func (candleCompactionPolicy) Compare(left, right Candle) int {
 	if value := left.Timestamp.Compare(right.Timestamp); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(candleSourceIdentity(left), candleSourceIdentity(right)); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.RunID, right.RunID); value != 0 {
+		return value
+	}
+	if value := cmp.Compare(left.Version, right.Version); value != 0 {
 		return value
 	}
 	if value := cmp.Compare(left.Open, right.Open); value != 0 {
@@ -352,8 +374,16 @@ func (candleCompactionPolicy) Compare(left, right Candle) int {
 	return cmp.Compare(left.Volume, right.Volume)
 }
 
+// DeduplicationKey identifies immutable Candles without merging distinct pools or revisions.
+//
+// Version:
+//   - 2026-09-23: Preserve execution source and revision isolation.
 func (candleCompactionPolicy) DeduplicationKey(record Candle) (string, bool) {
-	return fmt.Sprintf("%d", record.Timestamp.UnixMicro()), true
+	return fmt.Sprintf("%d/%s/%q/%d", record.Timestamp.UnixMicro(), candleSourceIdentity(record), record.RunID, record.Version), true
+}
+
+func candleSourceIdentity(record Candle) string {
+	return fmt.Sprintf("%q/%q/%q/%q", record.VenueSymbol, record.Chain, record.Network, record.PoolID)
 }
 
 func compareOptionalString(left, right *string) int {
