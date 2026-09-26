@@ -3,138 +3,285 @@ package oms
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 )
 
 func ptr[T any](v T) *T { return &v }
+
+var fixtureTime = time.Date(2026, 9, 26, 1, 2, 3, 123456000, time.UTC)
+
 func testOrder() Order {
-	return Order{ID: 1, AccountID: 1, AccountRef: "wallet", AssetClass: "crypto", Domain: DomainOnchainAMMPool, Venue: "uniswap-v3", Symbol: "ABC/USDC", Side: "exchange", OrderType: "limit", OrderState: OrderState{Status: OrderStatusPending, Quantity: ptr("100"), FilledQuantity: "0"}, IdempotencyKey: []byte("create")}
+	return Order{ID: 1, AccountID: 1, AccountRef: "wallet", AssetClass: "crypto", Domain: DomainOnchainAMMPool, Symbol: "SUI/USDC", Side: "exchange", OrderType: "market", OrderState: OrderState{Status: OrderStatusPending, Quantity: ptr("100"), FilledQuantity: "0"}, SpecificationVersion: 1, Specification: json.RawMessage(`{"quantityUnit":"SUI"}`), IdempotencyKey: []byte("order")}
 }
-func testSwap() OnchainAMMPoolSwap {
-	return OnchainAMMPoolSwap{OrderID: 1, ChainFamily: "evm", Chain: "base", Network: "sepolia", PoolID: "pool", TokenInID: "USDC", TokenOutID: "ABC", TokenInDecimals: 6, TokenOutDecimals: 18, SwapKind: "exact-input", Signer: "signer", Recipient: "recipient", MaximumSlippageBPS: 100, ExecutionTTLMS: 60000}
+func acceptance(id, orderID uint64) ExecutionRecord {
+	return ExecutionRecord{Execution: Execution{ID: id, OrderID: orderID, ExecType: ExecutionTypeSubmissionAccepted, RecordKey: []byte("accept"), ExecutionSystem: "tradehub", ExecutionID: ptr("exec_one"), Venue: ptr("cetus"), OccurredAt: fixtureTime}}
 }
-func testExecution() Execution {
-	return Execution{ID: 1, OrderID: 1, AttemptNumber: 1, ExecType: ExecutionTypeFilled, Purpose: ExecutionPurposeTrade, ExecutionState: ExecutionState{Status: ExecutionStatusSucceeded, Quantity: ptr("30"), CounterQuantity: ptr("3"), OccurredAt: time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)}, RecordKey: []byte("fill-a"), ExecutionSystem: "tradehub"}
+func fill(id, orderID, root uint64, key, quantity string) ExecutionRecord {
+	return ExecutionRecord{Execution: Execution{ID: id, OrderID: orderID, ExecType: ExecutionTypeFilled, SubmissionRecordID: ptr(root), RecordKey: []byte(key), ExecutionSystem: "tradehub", ExecutionID: ptr("exec_one"), Quantity: ptr(quantity), CounterQuantity: ptr("1"), QuantityAssetID: ptr("sui:testnet:SUI"), CounterAssetID: ptr("sui:testnet:USDC"), QuantityDecimals: ptr(uint16(9)), CounterDecimals: ptr(uint16(6)), OrderQuantity: ptr(quantity), OccurredAt: fixtureTime}}
+}
+func fact(id, orderID, root uint64, kind ExecutionType, key string) ExecutionRecord {
+	r := ExecutionRecord{Execution: Execution{ID: id, OrderID: orderID, ExecType: kind, RecordKey: []byte(key), ExecutionSystem: "tradehub", OccurredAt: fixtureTime}}
+	if !isOrderFact(kind) {
+		r.Execution.SubmissionRecordID = ptr(root)
+		r.Execution.ExecutionID = ptr("exec_one")
+	}
+	return r
+}
+func acceptanceDetail(family string) *OnchainDetail {
+	return &OnchainDetail{ChainFamily: family, Chain: family, Network: "testnet", TxID: "CaseSensitiveTx", SignerID: ptr("signer"), PayloadDigest: ptr("digest"), PayloadEncoding: ptr("fixture"), TxPayload: []byte("signed-fixture-payload"), ProtocolVersion: 1, ProtocolData: json.RawMessage(`{"b":2,"a":1}`)}
+}
+func resultDetail(family string) *OnchainDetail {
+	return &OnchainDetail{ChainFamily: family, Chain: family, Network: "testnet", TxID: "CaseSensitiveTx", LedgerUnit: ptr(map[string]string{"evm": "block", "solana": "slot", "sui": "checkpoint"}[family]), LedgerSequence: ptr(uint64(0)), TxPosition: ptr(uint64(0)), FinalityLevel: ptr("finalized"), ProtocolVersion: 1}
+}
+func fee(key, kind, amount string) ExecutionFee {
+	return ExecutionFee{RecordKey: []byte(key), FeeType: kind, AccountingTreatment: "additional", AssetNamespace: "currency", AssetID: "USD", AssetDecimals: 6, Amount: amount, SourceReference: key, OccurredAt: fixtureTime}
+}
+func sequence(records ...ExecutionRecord) []Execution {
+	out := make([]Execution, len(records))
+	for i, r := range records {
+		out[i] = r.Execution
+		out[i].Sequence = uint64(i) + 1
+	}
+	return out
+}
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
-// TestOrderValidation verifies approved statuses, decimal precision and condition nullability.
+// TestValidation verifies numeric fidelity, neutral evidence and rejected legacy stages.
 //
 // Version:
-//   - 2026-09-20: Added.
-func TestOrderValidation(t *testing.T) {
-	for _, status := range []OrderStatus{OrderStatusPending, OrderStatusProcessing, OrderStatusPartiallyFilled, OrderStatusFilled, OrderStatusCanceled, OrderStatusExpired, OrderStatusFailed, OrderStatusRejected} {
-		o := testOrder()
-		o.Status = status
-		if err := o.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	}
+//   - 2026-09-26: Cover the four-table model.
+func TestValidation(t *testing.T) {
+	must(t, testOrder().Validate())
 	for _, value := range []string{"0", "01", "1.0", "1e2", "-1", "NaN", "", "1.", strings.Repeat("1", 385)} {
 		o := testOrder()
 		o.Quantity = &value
-		if err := o.Validate(); !errors.Is(err, ErrInvalidParameter) {
-			t.Fatalf("accepted invalid quantity: length=%d", len(value))
+		if !errors.Is(o.Validate(), ErrInvalidParameter) {
+			t.Fatalf("invalid quantity accepted: length=%d", len(value))
 		}
 	}
 	o := testOrder()
 	o.Quantity = ptr("1." + strings.Repeat("0", 300) + "1")
-	if err := o.Validate(); err != nil {
-		t.Fatal(err)
-	}
+	must(t, o.Validate())
 	o.Quantity = nil
-	if err := o.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range []func(*Order){
-		func(o *Order) { o.ParentOrderID = &o.ID }, func(o *Order) { o.Status = "bad" },
-		func(o *Order) { o.TakeProfitType = ptr("price") }, func(o *Order) { o.StopLossValue = ptr("1") },
-		func(o *Order) { o.StopLossType = ptr("return_bps"); o.StopLossValue = ptr("-10001") },
-		func(o *Order) { o.TakeProfitType = ptr("return_bps"); o.TakeProfitValue = ptr("1.5") },
-		func(o *Order) { o.IdempotencyKey = make([]byte, 129) },
-	} {
+	must(t, o.Validate())
+	for _, change := range []func(*Order){func(o *Order) { o.Status = "processing" }, func(o *Order) { o.Specification = json.RawMessage(`[]`) }, func(o *Order) { o.SpecificationVersion = 0 }, func(o *Order) { o.ParentOrderID = &o.ID }, func(o *Order) { o.TakeProfitType = ptr("price") }} {
 		o := testOrder()
-		f(&o)
+		change(&o)
 		if !errors.Is(o.Validate(), ErrInvalidParameter) {
 			t.Fatal("invalid order accepted")
 		}
 	}
-	o = testOrder()
-	o.TakeProfitType = ptr("return_bps")
-	o.TakeProfitValue = ptr("2000")
-	o.StopLossType = ptr("return_bps")
-	o.StopLossValue = ptr("-1000")
-	if err := o.Validate(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// TestExecutionValidation verifies rejected stages and filled-only quantities.
-//
-// Version:
-//   - 2026-09-20: Added.
-func TestExecutionValidation(t *testing.T) {
-	for _, status := range []ExecutionStatus{ExecutionStatusPending, ExecutionStatusSucceeded, ExecutionStatusFailed, ExecutionStatusReversed, ExecutionStatusRejected} {
-		e := testExecution()
-		e.Status = status
-		if err := e.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, f := range []func(*Execution){
-		func(e *Execution) { e.ExecType = "fill" }, func(e *Execution) { e.Purpose = ExecutionPurposeApproval },
-		func(e *Execution) { e.Quantity = nil }, func(e *Execution) { e.CounterQuantity = nil },
-		func(e *Execution) { e.ExecType = ExecutionTypeSubmitted }, func(e *Execution) { e.ExpiresAt = ptr(time.Now()) },
-		func(e *Execution) { e.AttemptNumber = 0 }, func(e *Execution) { e.OccurredAt = time.Time{} },
-	} {
-		e := testExecution()
-		f(&e)
+	for _, kind := range []ExecutionType{"prepared", "approval", "partially_filled"} {
+		e := sequence(acceptance(1, 1))[0]
+		e.ExecType = kind
 		if !errors.Is(e.Validate(), ErrInvalidParameter) {
-			t.Fatal("invalid execution accepted")
+			t.Fatal("legacy fact accepted")
 		}
 	}
-	e := testExecution()
-	e.ExecType = ExecutionTypePrepared
-	e.Purpose = ExecutionPurposeApproval
-	e.Quantity = nil
-	e.CounterQuantity = nil
-	e.Status = ExecutionStatusRejected
-	e.ExpiresAt = ptr(time.Now())
-	if err := e.Validate(); err != nil {
-		t.Fatal(err)
+	for _, family := range []string{"evm", "solana", "sui"} {
+		r := acceptance(1, 1)
+		r.Onchain = acceptanceDetail(family)
+		_, err := normalizeRecord(r, 1, nil)
+		must(t, err)
+		f := fill(2, 1, 1, "fill", "0.1")
+		f.Onchain = resultDetail(family)
+		f.Onchain.LedgerSequence = ptr(uint64(math.MaxUint64))
+		f.Onchain.EventPosition = ptr(map[string]string{"evm": "v1/log/12", "solana": "v1/instruction/3/inner/1", "sui": "v1/event/2"}[family])
+		_, err = normalizeRecord(f, 2, nil)
+		must(t, err)
+		f.Onchain.LedgerUnit = ptr("invalid")
+		if _, err := normalizeRecord(f, 2, nil); !errors.Is(err, ErrInvalidParameter) {
+			t.Fatal("wrong ledger accepted")
+		}
+	}
+	for _, position := range []string{"v1/log/01", "v1/log/-1", "v2/log/1", "v1/event/1"} {
+		if eventPosition("evm", position) == nil {
+			t.Fatal("invalid position accepted")
+		}
+	}
+	for _, amount := range []string{"-0", "-1.0", "0.0000001", "1e2"} {
+		f := fee("fee", "gas", amount)
+		f.ID = 1
+		f.OrderID = 1
+		f.ExecutionRecordID = 1
+		if f.Validate() == nil {
+			t.Fatal("invalid fee accepted")
+		}
 	}
 }
 
-// TestStoreComposition verifies explicit table configuration and nil dependency rejection.
+// TestStoreComposition verifies explicit four-table composition and nil guards.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Update constructor and remove mutable execution methods.
 func TestStoreComposition(t *testing.T) {
 	s, err := NewDefaultStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.orderTable != DefaultOrderTableName || s.swapTable != DefaultSwapTableName || s.executionTable != DefaultExecutionTableName {
+	must(t, err)
+	if s.orderTable != DefaultOrderTableName || s.executionTable != DefaultExecutionTableName || s.onchainDetailTable != DefaultOnchainDetailTableName || s.feeTable != DefaultFeeTableName {
 		t.Fatal("wrong composition")
 	}
-	for _, names := range [][3]string{{"", "b", "c"}, {"a;DROP", "b", "c"}, {"a", "a", "c"}, {"A", "a", "c"}, {strings.Repeat("a", 65), "b", "c"}} {
-		if _, err := NewStore(names[0], names[1], names[2]); !errors.Is(err, ErrInvalidParameter) {
-			t.Fatal("invalid tables accepted")
+	for _, names := range [][4]string{{"", "b", "c", "d"}, {"a;DROP", "b", "c", "d"}, {"a", "A", "c", "d"}, {strings.Repeat("a", 65), "b", "c", "d"}} {
+		if _, err := NewStore(names[0], names[1], names[2], names[3]); !errors.Is(err, ErrInvalidParameter) {
+			t.Fatal("invalid names accepted")
 		}
 	}
 	var tx *sql.Tx
 	if _, err := s.SelectOrderForUpdate(context.Background(), tx, 1, 1); !errors.Is(err, ErrInvalidParameter) {
-		t.Fatal("nil transaction accepted")
+		t.Fatal("nil tx accepted")
 	}
-	if _, err := s.SelectOrder(nil, tx, 1, 1); !errors.Is(err, ErrInvalidParameter) {
+	if _, err := s.AppendExecution(context.Background(), tx, 1, acceptance(1, 1)); !errors.Is(err, ErrInvalidParameter) {
+		t.Fatal("nil tx append")
+	}
+	if _, err := s.InsertOrder(nil, tx, testOrder()); !errors.Is(err, ErrInvalidParameter) {
 		t.Fatal("nil context accepted")
 	}
-	if _, err := s.InsertExecution(context.Background(), tx, 1, testExecution()); !errors.Is(err, ErrInvalidParameter) {
-		t.Fatal("nil transaction accepted")
-	}
 	if a, b := GenerateOrderID(), GenerateOrderID(); a == 0 || b <= a {
-		t.Fatal("invalid generated IDs")
+		t.Fatal("invalid ids")
+	}
+}
+
+// TestReplayLifecycle verifies partial fills, absolute corrections and deterministic replay.
+//
+// Version:
+//   - 2026-09-26: Added.
+func TestReplayLifecycle(t *testing.T) {
+	o := testOrder()
+	a := acceptance(1, 1)
+	f1 := fill(2, 1, 1, "a", "30")
+	f2 := fill(3, 1, 1, "b", "70")
+	history := sequence(a, f1, f2)
+	for n, want := range []OrderStatus{OrderStatusPending, OrderStatusPartiallyFilled, OrderStatusFilled} {
+		p, err := ReplayOrder(o, history[:n+1])
+		must(t, err)
+		if p.State.Status != want {
+			t.Fatalf("state=%s", p.State.Status)
+		}
+	}
+	corrected := fill(4, 1, 1, "correction", "20")
+	corrected.Execution.ExecType = ExecutionTypeFillCorrected
+	corrected.Execution.ReferenceRecordID = ptr(uint64(2))
+	corrected.Execution.SourceVersion = ptr(uint64(2))
+	history = sequence(a, f1, f2, corrected)
+	p, err := ReplayOrder(o, history)
+	must(t, err)
+	if p.State.FilledQuantity != "90" || p.State.Status != OrderStatusPartiallyFilled || p.State.CompletedAt != nil || len(p.ActiveFills) != 2 {
+		t.Fatal("correction did not replace")
+	}
+	reversed := fact(5, 1, 1, ExecutionTypeFillReversed, "reversal")
+	reversed.Execution.ReferenceRecordID = ptr(uint64(4))
+	reversed.Execution.SourceVersion = ptr(uint64(3))
+	p, err = ReplayOrder(o, sequence(a, f1, f2, corrected, reversed))
+	must(t, err)
+	if p.State.FilledQuantity != "70" {
+		t.Fatal("reversal did not subtract")
+	}
+	bad := reversed
+	bad.Execution.ID = 6
+	bad.Execution.RecordKey = []byte("again")
+	if _, err := ReplayOrder(o, sequence(a, f1, f2, corrected, reversed, bad)); !errors.Is(err, ErrConflict) {
+		t.Fatal("reversed inactive fill twice")
+	}
+	old := corrected
+	old.Execution.ReferenceRecordID = ptr(uint64(4))
+	old.Execution.ID = 5
+	old.Execution.RecordKey = []byte("stale")
+	old.Execution.SourceVersion = ptr(uint64(1))
+	if _, err := ReplayOrder(o, sequence(a, f1, f2, corrected, old)); !errors.Is(err, ErrConflict) {
+		t.Fatal("stale correction accepted")
+	}
+	if *f1.Execution.Quantity != "30" {
+		t.Fatal("input mutated")
+	}
+}
+
+// TestReplayTermination verifies failure isolation, cancellation, reorg and atomic leg quantities.
+//
+// Version:
+//   - 2026-09-26: Added.
+func TestReplayTermination(t *testing.T) {
+	a := acceptance(1, 1)
+	f := fill(2, 1, 1, "fill", "30")
+	cancel := fact(3, 1, 0, ExecutionTypeOrderCanceled, "cancel")
+	p, err := ReplayOrder(testOrder(), sequence(a, f, cancel))
+	must(t, err)
+	if p.State.Status != OrderStatusCanceled || p.State.FilledQuantity != "30" || p.State.CompletedAt == nil {
+		t.Fatal("cancel lost fill")
+	}
+	failed := fact(2, 1, 1, ExecutionTypeFailed, "failed")
+	p, err = ReplayOrder(testOrder(), sequence(a, failed))
+	must(t, err)
+	if p.State.Status != OrderStatusPending {
+		t.Fatal("single tx failed order")
+	}
+	end := fact(3, 1, 0, ExecutionTypeOrderFailed, "end")
+	p, err = ReplayOrder(testOrder(), sequence(a, failed, end))
+	must(t, err)
+	if p.State.Status != OrderStatusFailed {
+		t.Fatal("order failure missing")
+	}
+	success := fact(2, 1, 1, ExecutionTypeSucceeded, "success")
+	full := fill(3, 1, 1, "full", "100")
+	reverse := fact(4, 1, 1, ExecutionTypeReversed, "reorg")
+	reverse.Execution.ReferenceRecordID = ptr(uint64(2))
+	p, err = ReplayOrder(testOrder(), sequence(a, success, full, reverse))
+	must(t, err)
+	if p.State.Status != OrderStatusPending || p.State.FilledQuantity != "0" || p.State.CompletedAt != nil {
+		t.Fatal("reorg left completed fill")
+	}
+	leg := fill(4, 1, 1, "intermediate", "100")
+	leg.Execution.OrderQuantity = ptr("0")
+	p, err = ReplayOrder(testOrder(), sequence(a, success, full, leg))
+	must(t, err)
+	if p.State.FilledQuantity != "100" || len(p.ActiveFills) != 2 {
+		t.Fatal("intermediate leg counted twice")
+	}
+	late := fill(4, 1, 1, "late", "30")
+	late.Execution.OccurredAt = fixtureTime.Add(-time.Hour)
+	p, err = ReplayOrder(testOrder(), sequence(a, cancel, late))
+	must(t, err)
+	if p.State.FilledQuantity != "30" || p.State.Status != OrderStatusCanceled {
+		t.Fatal("late fill lost cancellation")
+	}
+	o := testOrder()
+	o.Quantity = nil
+	p, err = ReplayOrder(o, sequence(a, full))
+	must(t, err)
+	if p.State.Status != OrderStatusPartiallyFilled {
+		t.Fatal("guessed unknown completion")
+	}
+}
+
+// TestReplayPrecision verifies exact sums beyond floating-point and SQL DECIMAL precision.
+//
+// Version:
+//   - 2026-09-26: Added.
+func TestReplayPrecision(t *testing.T) {
+	a := acceptance(1, 1)
+	x := fill(2, 1, 1, "x", "0.1")
+	y := fill(3, 1, 1, "y", "0.2")
+	o := testOrder()
+	o.Quantity = ptr("0.3")
+	p, err := ReplayOrder(o, sequence(a, x, y))
+	must(t, err)
+	if p.State.FilledQuantity != "0.3" || p.State.Status != OrderStatusFilled {
+		t.Fatal("decimal sum rounded")
+	}
+	x.Execution.OrderQuantity = ptr("1." + strings.Repeat("0", 300) + "1")
+	y.Execution.OrderQuantity = ptr("2")
+	o.Quantity = nil
+	p, err = ReplayOrder(o, sequence(a, x, y))
+	must(t, err)
+	if p.State.FilledQuantity != "3."+strings.Repeat("0", 300)+"1" {
+		t.Fatal("precision lost")
 	}
 }

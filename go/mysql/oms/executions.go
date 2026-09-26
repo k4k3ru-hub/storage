@@ -5,60 +5,92 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
-
 	api "github.com/k4k3ru-hub/storage/go/api"
+	"strings"
 )
 
-// InsertExecution records one execution stage or individual fill under a locked owned order.
-// It never changes the order state or sums fills. The caller must roll back on error.
+// AppendExecution appends a fact, evidence and fees and rebuilds the locked order snapshot.
+// It allocates sequence and zero IDs. An identical key/content returns the original record.
+// The caller owns commit and must roll back the entire transaction on any error.
+// No RPC or network operation may be performed while holding this transaction.
 //
 // Version:
-//   - 2026-09-20: Added.
-func (s *Store) InsertExecution(ctx context.Context, tx *sql.Tx, accountID uint64, value Execution) (uint64, error) {
-	const op = "failed to insert oms execution"
-	if err := s.guard(ctx, tx); err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
-	}
-	if value.ID == 0 {
-		value.ID = GenerateExecutionID()
-	}
-	value.CreatedAt = created(value.CreatedAt)
-	value.UpdatedAt = value.CreatedAt
-	value.OccurredAt = utc(value.OccurredAt)
-	value.ExpiresAt = optionalTime(value.ExpiresAt)
-	if err := value.Validate(); err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
-	}
-	if _, err := s.SelectOrderForUpdate(ctx, tx, accountID, value.OrderID); err != nil {
-		return 0, fmt.Errorf("%s: %w", op, err)
-	}
-	_, err := tx.ExecContext(ctx, "INSERT INTO "+quoted(s.executionTable)+" ("+executionColumns+") VALUES ("+executionPlaceholders+")", executionArgs(value)...)
+//   - 2026-09-26: Replace execution mutation with atomic history append.
+func (s *Store) AppendExecution(ctx context.Context, tx *sql.Tx, accountID uint64, record ExecutionRecord) (*AppendResult, error) {
+	const op = "failed to append oms execution"
+	order, err := s.SelectOrderForUpdate(ctx, tx, accountID, record.Execution.OrderID)
 	if err != nil {
-		return 0, writeError(op, err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	return value.ID, nil
+	history, err := s.loadHistory(ctx, tx, order.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	facts := make([]Execution, len(history))
+	for i, r := range history {
+		facts[i] = r.Execution
+	}
+	before, err := ReplayOrder(*order, facts)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if !orderStateEqual(order.OrderState, before.State) {
+		return nil, fmt.Errorf("%s: %w: snapshot=invalid", op, ErrConflict)
+	}
+	var existing *ExecutionRecord
+	for i := range history {
+		if string(history[i].Execution.RecordKey) == string(record.Execution.RecordKey) {
+			existing = &history[i]
+			break
+		}
+	}
+	normalized, err := normalizeRecord(record, order.LastExecutionSequence+1, existing)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if existing != nil {
+		equal, err := recordsEqual(normalized, *existing)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		if !equal {
+			return nil, fmt.Errorf("%s: %w: record_key=invalid", op, ErrConflict)
+		}
+		return &AppendResult{ExecutionID: existing.Execution.ID, Sequence: existing.Execution.Sequence, Duplicate: true, State: order.OrderState}, nil
+	}
+	facts = append(facts, normalized.Execution)
+	next, err := ReplayOrder(*order, facts)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if err := validateChildren(normalized, history); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if _, err := tx.ExecContext(ctx, insertSQL(s.executionTable, executionColumns), executionArgs(normalized.Execution)...); err != nil {
+		return nil, writeError(op, err)
+	}
+	if d := normalized.Onchain; d != nil {
+		if _, err := tx.ExecContext(ctx, insertSQL(s.onchainDetailTable, onchainDetailColumns), onchainDetailArgs(*d)...); err != nil {
+			return nil, writeError(op, err)
+		}
+	}
+	for _, f := range normalized.Fees {
+		if _, err := tx.ExecContext(ctx, insertSQL(s.feeTable, executionFeeColumns), executionFeeArgs(f)...); err != nil {
+			return nil, writeError(op, err)
+		}
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.orderTable)+" SET status=?,filled_quantity=?,completed_at=?,last_execution_sequence=? WHERE account_id=? AND id=?", next.State.Status, next.State.FilledQuantity, optionalTime(next.State.CompletedAt), next.State.LastExecutionSequence, accountID, order.ID)
+	if err != nil {
+		return nil, writeError(op, err)
+	}
+	return &AppendResult{ExecutionID: normalized.Execution.ID, Sequence: normalized.Execution.Sequence, State: next.State}, nil
 }
 
-// SelectExecutionByKey retrieves one owned execution record by its stable order-scoped key.
+// SelectExecutionByKey retrieves an owned fact by its stable order-local key.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Read immutable facts from the new schema.
 func (s *Store) SelectExecutionByKey(ctx context.Context, executor api.Executor, accountID, orderID uint64, key []byte) (*Execution, error) {
-	return s.selectExecution(ctx, executor, accountID, orderID, key, false)
-}
-
-// SelectExecutionForUpdate locks the parent before the record for consistent write ordering.
-//
-// Version:
-//   - 2026-09-20: Added.
-func (s *Store) SelectExecutionForUpdate(ctx context.Context, tx *sql.Tx, accountID, orderID uint64, key []byte) (*Execution, error) {
-	if _, err := s.SelectOrderForUpdate(ctx, tx, accountID, orderID); err != nil {
-		return nil, fmt.Errorf("failed to lock oms execution: %w", err)
-	}
-	return s.selectExecution(ctx, tx, accountID, orderID, key, true)
-}
-func (s *Store) selectExecution(ctx context.Context, executor api.Executor, accountID, orderID uint64, key []byte, lock bool) (*Execution, error) {
 	const op = "failed to select oms execution"
 	if err := s.guard(ctx, executor); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
@@ -69,80 +101,169 @@ func (s *Store) selectExecution(ctx context.Context, executor api.Executor, acco
 	if err := binaryKey("record_key", key); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	columns := "e." + strings.ReplaceAll(executionColumns, ",", ",e.")
-	query := "SELECT " + columns + " FROM " + quoted(s.executionTable) + " e JOIN " + quoted(s.orderTable) + " o ON o.id=e.order_id WHERE o.account_id=? AND o.id=? AND e.record_key=?"
-	if lock {
-		query += " FOR UPDATE"
-	}
-	value, err := scanExecution(executor.QueryRowContext(ctx, query, accountID, orderID, key))
+	value, err := scanExecution(executor.QueryRowContext(ctx, "SELECT "+prefixed("e", executionColumns)+" FROM "+quoted(s.executionTable)+" e JOIN "+quoted(s.orderTable)+" o ON o.id=e.order_id WHERE o.account_id=? AND o.id=? AND e.record_key=?", accountID, orderID, key))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return value, nil
 }
 
-// ListExecutions reads an ID-ordered page scoped to an owned order.
-// Use the last returned ID as afterID; limit must be between 1 and 200.
+// ListExecutions lists immutable facts ordered by sequence, after an exclusive sequence cursor.
+// Limits range from 1 through 200; use a transaction for a consistent multi-page view.
 //
 // Version:
-//   - 2026-09-20: Added.
-func (s *Store) ListExecutions(ctx context.Context, executor api.Executor, accountID, orderID, afterID uint64, limit uint32) (result []Execution, returnErr error) {
+//   - 2026-09-26: Replace ID pagination with order-local sequence pagination.
+func (s *Store) ListExecutions(ctx context.Context, executor api.Executor, accountID, orderID, afterSequence uint64, limit int) ([]Execution, error) {
 	const op = "failed to list oms executions"
-	if err := s.guard(ctx, executor); err != nil {
-		return nil, fmt.Errorf("%s: %w", op, err)
-	}
-	if limit == 0 || limit > 200 {
+	if limit < 1 || limit > 200 {
 		return nil, fmt.Errorf("%s: %w", op, invalid("limit", "out_of_range"))
 	}
 	if _, err := s.SelectOrder(ctx, executor, accountID, orderID); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	columns := "e." + strings.ReplaceAll(executionColumns, ",", ",e.")
-	rows, err := executor.QueryContext(ctx, "SELECT "+columns+" FROM "+quoted(s.executionTable)+" e JOIN "+quoted(s.orderTable)+" o ON o.id=e.order_id WHERE o.account_id=? AND o.id=? AND e.id>? ORDER BY e.id LIMIT ?", accountID, orderID, afterID, limit)
+	rows, err := executor.QueryContext(ctx, "SELECT "+executionColumns+" FROM "+quoted(s.executionTable)+" WHERE order_id=? AND sequence>? ORDER BY sequence LIMIT ?", orderID, afterSequence, limit)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			returnErr = joinReadError(returnErr, op, err)
-		}
-	}()
-	result = make([]Execution, 0)
-	for rows.Next() {
-		value, err := scanExecution(rows)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", op, err)
-		}
-		result = append(result, *value)
-	}
-	if err := rows.Err(); err != nil {
+	values, err := readRows(rows, scanExecution)
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	return result, nil
+	return values, nil
 }
 
-// UpdateExecutionState stores a caller-decided correction only if the locked record matches expected.
-// Identity and stage fields remain immutable. Order aggregation belongs to the caller's transaction.
+// SelectOnchainDetail retrieves owned evidence without loading the recovery payload.
 //
 // Version:
-//   - 2026-09-20: Added.
-func (s *Store) UpdateExecutionState(ctx context.Context, tx *sql.Tx, accountID, orderID uint64, key []byte, expected, next ExecutionState) error {
-	const op = "failed to update oms execution state"
-	current, err := s.SelectExecutionForUpdate(ctx, tx, accountID, orderID, key)
+//   - 2026-09-26: Added.
+func (s *Store) SelectOnchainDetail(ctx context.Context, executor api.Executor, accountID, orderID, recordID uint64) (*OnchainDetail, error) {
+	const op = "failed to select oms onchain detail"
+	if err := s.guard(ctx, executor); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if err := identity(accountID, orderID); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	columns := strings.Replace(prefixed("d", onchainDetailColumns), "d.tx_payload", "NULL", 1)
+	value, err := scanOnchainDetail(executor.QueryRowContext(ctx, "SELECT "+columns+" FROM "+quoted(s.onchainDetailTable)+" d JOIN "+quoted(s.orderTable)+" o ON o.id=d.order_id WHERE o.account_id=? AND o.id=? AND d.execution_record_id=?", accountID, orderID, recordID))
 	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	if !executionStateEqual(current.ExecutionState, expected) {
-		return fmt.Errorf("%s: %w", op, ErrConflict)
-	}
-	current.ExecutionState = next
-	if err := current.Validate(); err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.executionTable)+" SET status=?,execution_id=?,quantity=?,counter_quantity=?,source_version=?,occurred_at=?,expires_at=? WHERE order_id=? AND id=?", next.Status, next.ExecutionID, next.Quantity, next.CounterQuantity, next.SourceVersion, utc(next.OccurredAt), optionalTime(next.ExpiresAt), orderID, current.ID)
-	return writeError(op, err)
+	return value, nil
 }
 
-func joinReadError(previous error, operation string, err error) error {
-	return errors.Join(previous, fmt.Errorf("%s: %w", operation, err))
+// SelectSubmissionPayload retrieves owned recovery material for an accepted submission only.
+// Keep the returned bytes inside the recovery worker; never include them in API responses or logs.
+//
+// Version:
+//   - 2026-09-26: Added.
+func (s *Store) SelectSubmissionPayload(ctx context.Context, executor api.Executor, accountID, orderID, recordID uint64) ([]byte, error) {
+	const op = "failed to select oms submission payload"
+	if err := s.guard(ctx, executor); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if err := identity(accountID, orderID); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	var payload []byte
+	err := executor.QueryRowContext(ctx, "SELECT d.tx_payload FROM "+quoted(s.onchainDetailTable)+" d JOIN "+quoted(s.orderTable)+" o ON o.id=d.order_id WHERE o.account_id=? AND o.id=? AND d.execution_record_id=? AND d.exec_type='submission_accepted'", accountID, orderID, recordID).Scan(&payload)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	return payload, nil
+}
+
+// ListExecutionFees lists fee components owned by one execution history record.
+// Original costs and signed adjustments are returned unchanged; no currency conversion is inferred.
+//
+// Version:
+//   - 2026-09-26: Added.
+func (s *Store) ListExecutionFees(ctx context.Context, executor api.Executor, accountID, orderID, recordID uint64) ([]ExecutionFee, error) {
+	const op = "failed to list oms execution fees"
+	if err := s.guard(ctx, executor); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if err := identity(accountID, orderID); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	var id uint64
+	err := executor.QueryRowContext(ctx, "SELECT e.id FROM "+quoted(s.executionTable)+" e JOIN "+quoted(s.orderTable)+" o ON o.id=e.order_id WHERE o.account_id=? AND o.id=? AND e.id=?", accountID, orderID, recordID).Scan(&id)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	rows, err := executor.QueryContext(ctx, "SELECT "+executionFeeColumns+" FROM "+quoted(s.feeTable)+" WHERE order_id=? AND execution_record_id=? ORDER BY id", orderID, recordID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	values, err := readRows(rows, scanExecutionFee)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	return values, nil
+}
+func prefixed(alias, columns string) string {
+	return alias + "." + strings.ReplaceAll(columns, ",", ","+alias+".")
+}
+func readRows[T any](rows *sql.Rows, scan func(scanner) (*T, error)) (values []T, err error) {
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+	for rows.Next() {
+		v, scanErr := scan(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, *v)
+	}
+	return values, rows.Err()
+}
+func (s *Store) loadHistory(ctx context.Context, tx *sql.Tx, orderID uint64) ([]ExecutionRecord, error) {
+	// Current reads are required even if the caller established an earlier REPEATABLE READ snapshot.
+	rows, err := tx.QueryContext(ctx, "SELECT "+executionColumns+" FROM "+quoted(s.executionTable)+" WHERE order_id=? ORDER BY sequence FOR UPDATE", orderID)
+	if err != nil {
+		return nil, err
+	}
+	facts, err := readRows(rows, scanExecution)
+	if err != nil {
+		return nil, err
+	}
+	history := make([]ExecutionRecord, len(facts))
+	positions := map[uint64]int{}
+	for i, e := range facts {
+		history[i].Execution = e
+		positions[e.ID] = i
+	}
+	rows, err = tx.QueryContext(ctx, "SELECT "+onchainDetailColumns+" FROM "+quoted(s.onchainDetailTable)+" WHERE order_id=? FOR UPDATE", orderID)
+	if err != nil {
+		return nil, err
+	}
+	details, err := readRows(rows, scanOnchainDetail)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range details {
+		pos, ok := positions[d.ExecutionRecordID]
+		if !ok {
+			return nil, ErrConflict
+		}
+		history[pos].Onchain = &d
+	}
+	rows, err = tx.QueryContext(ctx, "SELECT "+executionFeeColumns+" FROM "+quoted(s.feeTable)+" WHERE order_id=? ORDER BY id FOR UPDATE", orderID)
+	if err != nil {
+		return nil, err
+	}
+	fees, err := readRows(rows, scanExecutionFee)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fees {
+		pos, ok := positions[f.ExecutionRecordID]
+		if !ok {
+			return nil, ErrConflict
+		}
+		history[pos].Fees = append(history[pos].Fees, f)
+	}
+	return history, nil
 }

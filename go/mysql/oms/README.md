@@ -1,187 +1,215 @@
-# OMS — MySQL Storeとレビュー済み3テーブルのDDL
+# OMS — 注文snapshotと追記型履歴のMySQL Store
 
-2026-09-20。[schema.proposed.sql](schema.proposed.sql) にユーザーレビュー済みの構成を統合。
-ファイル名は従来の参照を維持。本番migrationではなく、既存DBへは未適用。
-以前の戦略root案・8テーブル案はこの内容で置き換えた。
+2026-09-26。TradeHubの新001と同じ4テーブルへ更新した破壊的変更。
+`schema.proposed.sql`は既存ファイル名を維持しているが、内容は新001のOMS部分に一致する。
+このモジュールだけではTradeHubのPrepare／Submit／照合処理を切り替えない。
 
 ## 構成
 
-| テーブル | 行の意味 |
+| テーブル | 役割 |
 | --- | --- |
-| oms_orders | 注文の現在状態。累積約定量、指値/TP/SL、親注文との関連を含む |
-| oms_order_onchain_amm_pool_swaps | 注文に1対1で紐付くAMM Pool Swapの詳細 |
-| oms_order_executions | Prepare・送信・個別約定などの実行記録1件 |
+| oms_orders | 原注文の条件、現在状態、累積約定量、反映済みsequence |
+| oms_order_executions | 受付・送信・結果・約定・訂正・終了を表す追記型履歴 |
+| oms_order_execution_onchain_details | 履歴ごとのTx・台帳・イベント根拠。受付だけが復旧payloadを保持 |
+| oms_order_execution_fees | 履歴ごとの複数費用。訂正は原費用を参照する符号付き差分 |
 
-```mermaid
-erDiagram
-    oms_orders ||--o{ oms_orders : parent_order_id
-    oms_orders ||--o| oms_order_onchain_amm_pool_swaps : order_id
-    oms_orders ||--o{ oms_order_executions : order_id
-```
+Prepare・Quote・approveの履歴型はない。初回Swap Submitの受付から保存する。
+executionの可変status、purpose、attempt_number、expires_at、updated_atは廃止した。
+`OnchainAMMPoolSwap`、`ExecutionState`、`UpdateExecutionState`など旧APIも廃止した。
+旧APIを新テーブルへ見かけ上マッピングする互換レイヤーは提供しない。
 
-strategy、balance、position、conditions、relations、fills、eventsの独立テーブルは作らない。
-OpenとCloseは別注文。Close.parent_order_idがOpenを指す。Closeは任意。
+## 作成・追記とトランザクション
 
-## oms_orders
+`NewDefaultStore()`、または
+`NewStore(orderTable, executionTable, onchainDetailTable, feeTable)`で構成する。
+TradeHubでは各デフォルト名へ`trade_hub_`を付ける。
+StoreはDB接続・commitを所有せず、書込みは呼出元の`*sql.Tx`を受け取る。
 
-- 内部IDはBIGINT UNSIGNED / Go uint64。storage既存ID Generatorで採番する。
-- account_idはK4K3RU所有者、account_refは実行口座/walletの論理参照。
-- asset_classはcrypto/fx/stock等、domainはドメイン専用テーブルの判別用。
-  `onchain-amm-pool` は `oms_order_onchain_amm_pool_swaps` に固定対応する。
-  テーブル名を外部入力から動的生成しない。
-- symbolは表示/検索用。厳密な銘柄識別はドメイン側に置く。
-- sideとorder_typeは売買方向/発注方式。TP/SLは注文を発動する条件であり、種類とは別。
-- quantityとfilled_quantityは同じ単位。Closeの数量確定前はquantity=NULL。
-- TP/SLのtypeはprice/return_bps。typeとvalueは両方NULLか両方設定。
-  条件式の値の意味・価格単位・原価参照元はドメインで定義する。
-- (account_id,idempotency_key)の重複は内容に関係なく拒否する。
-  通信断後の確認用に、`SelectOrderByIdempotencyKey`で同じ組による既存注文取得を提供する。
-- request_snapshot/request_digest/schema_version/revisionは置かない。
-- expires_atは注文の期限、completed_atは終端状態への遷移時刻。
+初回Submitでは、同じtransactionで次を実施する。
 
-## oms_order_onchain_amm_pool_swaps
+1. `InsertOrder`でpending／filled_quantity=0／sequence=0の注文を作る。
+2. `AppendExecution`で`submission_accepted`と検証済み送信材料を追記する。
+3. commit後にRPC送信する。commit失敗時は送信しない。
 
-order_idを主キー兼FKとし、別のIDは付けない。venueは親を参照する。
-初期対応はAMM Pool直接指定のSwap。アグリゲータの複数Poolルートは対象外。
-EVMはPoolコントラクト/Token address、SolanaはPool account/Mint、SuiはPool object/Coin Typeを
-識別するためのカラムであり、DDLだけで各チェーンの実行対応を追加するものではない。
-Solanaのrecipientは受取人walletとして扱い、Token Accountは実行時に解決する案。
+`InsertOrder`は任意のasset_classに利用でき、venueはNULLにできる。
+注文の`specification`は原注文条件・単位のJSON objectと正のversionを必要とする。
+公開アドレス以外の資格情報や秘密鍵を注文仕様・protocol_dataへ入れない。
+原注文の数量、親注文、条件を履歴追記の途中で書き換えるAPIは設けない。
 
-Exact Inputなら親のquantity/filled_quantityは入力Token単位、Exact Outputなら出力Token単位。
-counter_quantityは反対側の実数量。この関係は約定記録にも適用する。
-NewPairの初期Open/CloseではExact Inputを利用する。
-execution_ttl_msは個々のPrepareの有効期間で、親注文のexpires_atとは別。
-Signerは公開アドレスのみ。秘密鍵・資格情報は保存しない。
+`AppendExecution(ctx, tx, accountID, ExecutionRecord)`は以下を行う。
 
-## oms_order_executions — 統合型
+1. 所有者を確認し、親注文を`SELECT ... FOR UPDATE`でロックする。
+2. 履歴をcurrent readで取得し、再生結果と保存snapshotの整合を検査する。
+3. 安定record_keyが既存なら、事実・詳細・全費用の一致を確認して同じIDを返す。
+4. 新規なら注文内sequenceを採番し、参照・単位・根拠・費用を検査する。
+5. 履歴・onchain詳細・feesをINSERTし、再集計した注文snapshotをUPDATEする。
 
-1行を実行試行全体ではなく、実行過程の記録1件とする。
-(order_id,attempt_number)で同じ試行をまとめ、exec_typeで段階を区別する。
+ID=0は自動採番。execution.Sequence=0はStore採番を要求する。
+子の親ID・exec_typeは省略でき、親から補完する。指定した場合は一致が必要。
+渡した構造体・sliceは変更しない。発生時刻は呼出元、保存時刻は省略時にStoreが設定する。
+時刻はUTC DATETIME(6)、数量は正規化した10進文字列。`math/big`で計算し、floatを使わない。
 
-| attempt_number | exec_type | purpose | status | quantity |
-| --- | --- | --- | --- | --- |
-| 1 | prepared | approval | succeeded | NULL |
-| 1 | submitted | approval | succeeded | NULL |
-| 2 | prepared | trade | succeeded | NULL |
-| 2 | submitted | trade | pending | NULL |
-| 2 | filled | trade | succeeded | 30 |
-| 2 | filled | trade | succeeded | 20 |
+**書込みエラー時は、呼出元がtransaction全体をrollbackする。**
+SQLの子INSERT失敗などでは、そのtransaction内に先行書込みが残り得るため、エラーを無視してcommitしない。
+ロック中にRPCを呼ばない。複数注文を扱う場合は親注文を固定ID順でロックする。
 
-この場合、親注文の累積約定量は50。Approvalは累積に含めない。
-prepared成功は準備完了、submitted成功は実行先での完了確認、filled成功は有効な個別約定。
-準備/送信の失敗も該当段階のstatus=failedで記録する。
+同じkey・同じ内容の再通知は`AppendResult.Duplicate=true`を返し、sequenceを増やさない。
+自動採番ID・保存時刻を指定し直す必要はない。JSON objectのキー順・費用sliceの順は比較に影響しない。
+同じkeyで数量・Tx材料・費用などが変われば`ErrConflict`。
+別注文の公開execution_id／同じchain・networkのTx受付重複は`ErrDuplicate`。
+`errors.Is`で`ErrInvalidParameter`、`ErrConflict`、`ErrDuplicate`、`sql.ErrNoRows`を識別できる。
 
-- record_keyは注文内の安定した記録識別子。段階記録は試行と段階、約定は提供元約定ID等で
-  区別する。受信ごとに乱数キーを作らない。約定再配信は新しい約定として加算しない。
-- 同じ外部約定が試行番号を変えて再配信されても、同じrecord_keyへ正規化する。
-- execution_idは複数段階/部分約定に共通なのでUNIQUEにしない。
-- source_versionは提供元に単調な改訂番号があるときのみ利用する。
-  番号がないとき、受信順だけで上書きせず、提供元照会等で整合を確認する。
-- 約定訂正は該当記録を更新、取消/reorgはreversedに更新して数量を保持する。
-  訂正前の全履歴は保存しない。原始通知を全件保管するイベントログではない。
-- expires_atはpreparedにだけ設定できる。実行詳細のNonce/Gas/署名payload等は既存の
-  TradeHub Executionを参照し、このDDLではその移行/複製を行わない。
+## 履歴と集約規則
 
-## 同一トランザクションで行う更新
+`ReplayOrder(order, completeHistory)`はDB非依存の再生関数。
+sequence=1から連続する全履歴を渡し、snapshotと有効約定のリストを得る。
+`AppendExecution`も同じ関数を使用する。個別ページや時刻順での再生は行わない。
 
-1. 親注文をSELECT ... FOR UPDATEでロックする。
-2. 外部記録の重複/改訂順を確認し、実行記録を追加または更新する。
-3. 有効なfilled（purpose=trade、status=succeeded）だけから累積値を任意精度で計算する。
-4. 親のfilled_quantity/statusを更新してcommitする。
+| 事実 | exec_type | 注文への効果 |
+| --- | --- | --- |
+| 送信受付 | submission_accepted | 送信単位の起点。未約定はpending |
+| RPCが受理／明確に拒否 | submitted / submission_rejected | 単独では注文全体を終了しない |
+| 取引結果 | execution_succeeded / execution_failed | 成功receiptだけでfilledにはしない |
+| 個別約定 | filled | order_quantityを累積する |
+| 約定訂正 | fill_corrected | 参照した有効約定を、訂正後の絶対数量へ置換 |
+| 約定取消 | fill_reversed | 参照した有効約定を累積対象から外す |
+| 結果撤回 | execution_reversed | 現在の結果と同じ送信の有効約定を無効化 |
+| 費用遅着／訂正 | fees_recorded / fees_adjusted | 数量を変えずに費用と確認状態を追記 |
+| 根拠補足 | evidence_recorded | 対象履歴を参照して根拠を追加 |
+| 注文終了 | order_canceled / order_expired / order_rejected / order_failed | 残量の処理終了。既約定量を保持 |
 
-約定情報のないApproval成功/送信成功をfilledに変換しない。
-複数注文を更新する場合は固定ID順にロックする。RPC待機中はDBロックを保持しない。
-DBトリガーによる自動集計は設けない。Storeは親ロックと更新前状態の照合を行う。
-TradeHubが集計値と状態を決定し、実行記録と親状態を同じトランザクションで更新する。
+1公開execution_idは1送信を表し、受付・結果・複数約定で共有する。
+別送信は別の受付・公開ID。submission_record_idは同じ注文の受付だけを指す。
+訂正・取消・費用の参照は同じ注文・送信・execution_systemに限定する。
+参照は既存履歴だけを許可し、循環参照や無効化済み約定の再訂正を拒否する。
+約定訂正は同じ資産・decimalsを保持する。両側にsource_versionがある訂正・撤回は新しいrevisionを要求する。
+費用のrevisionは約定のrevisionと混同せず、費用ごとの元額・既存訂正と比較する。
+提供元にrevisionがない場合、提供元照会による因果関係の検証はadapterが担う。
 
-## DDL制約と、Store/ドメイン層の責務
+数量100に対して30・70のfilledを追記すると、partially_filled/30 → filled/100になる。
+30を20へ訂正すればpartially_filled/90へ戻り、completed_atも解除する。
+残量取消済みの注文に遅着約定を追記しても、未約定残量の取消は維持する。
+複数送信の一部失敗だけではfailedにしない。終了判断は明示的なorder_*履歴として渡す。
+明示的な注文終了は保持する。約定の訂正・撤回から注文の再発注を自動決定しない。
 
-DDLで保証するもの:
+要求量を満たした場合はfilled、それ未満の正の累積はpartially_filled、0ならpending。
+order_quantityは注文の単位に統一し、Atomicの途中legは0にする。各legのQuantityは実数量を保持する。
+quantity=NULLは未確定を表し、正の累積があってもfilledとは推測しない。
+この版には数量を後から確定するAPIや注文別の特殊な完了判定はない。
+初期Swapの呼出元はSubmit受付時点で注文数量を確定する。
 
-- 注文作成キーと実行record_keyの重複禁止
-- 親注文/Swap子/実行記録の参照先の存在と削除制限
-- Swap子の1対1、swap_kind、Slippage上限、正のTTL
-- TP/SLのtype/valueのNULL対応とtypeの許可値
-- 正のattempt_number、filledだけの数量必須・approval約定禁止、preparedだけの期限
+結果のreversal後は新しい成功結果を記録してから再収録約定を追記する。
+結果は同じ送信に対し有効なものを1件とし、訂正なしの矛盾した結果を拒否する。
+費用は約定取消・reorgだけで消さない。還付等は根拠を持つ費用訂正で記録する。
 
-Storeで保証するもの:
+## onchain詳細
 
-- 全取得・更新のaccountスコープ、親子注文の同一account、自己参照禁止
-- 親IDは作成時のみ設定し、既存親を要求することでStore経由の循環参照を防止
-- AMM注文のdomainと専用子レコードの整合、呼出元トランザクション内での同時作成
-- 数量/価格文字列の正規化と正値/非負値、最大384文字
-- TPのreturn_bpsは正整数、SLは-10000以上の負整数、priceは正値
-- 注文status、exec_type、purpose、実行statusの許可値
-- 親ロック、更新前状態との不一致によるErrConflict、重複キーによるErrDuplicate
+EVM→block、Solana→slot、Sui→checkpointをledger_unitに設定する。
+ledger_sequence・tx_positionのNULLと0を区別し、uint64最大値まで保存する。
+Tx IDや資産識別子は大文字小文字を区別する。受信形式のchain固有の正規化はadapterが担う。
 
-TradeHubで判断するもの:
+| event_position | 例 |
+| --- | --- |
+| EVMのlog位置 | v1/log/12 |
+| SuiのTx内event位置 | v1/event/2 |
+| Solanaのinstruction | v1/instruction/3 |
+| Solanaの内部instruction | v1/instruction/3/inner/1 |
+| Solanaのprogram log | v1/program-log/20 |
 
-- 注文種別・方向の意味、状態遷移、段階間の整合、終端時刻
-- Open/Closeのドメイン・資産対応、オンチェーン識別子の有効性
-- 外部Executionの所有者と存在、別注文/別試行への誤った重複紐付け防止
-- 累積約定量更新、Close量算出、再送可否、提供元の改訂順照合
+受付にはsigner・payload digest／encoding／payloadが必要で、台帳位置は持たない。
+結果・約定にはledger情報とfinalityが必要。filledにはevent_positionも必要。
+後続履歴のchain／network／Tx IDは受付と一致させる。
+有効な結果・複数約定の台帳位置も整合させ、同じ根拠を別record_keyで二重約定にしない。
+後から判明したledger_idの補足だけで別の約定にしない。
+同じTxに複数event_positionを持つAtomicの約定は許容する。
 
-注文statusはpending / processing / partially_filled / filled / canceled / expired / failed / rejected。
-実行statusはpending / succeeded / failed / reversed / rejected。
-Storeは`rejected`を保存・取得できるが、拒否と判定する条件はTradeHubに置く。
+`SelectOnchainDetail`はSQLでtx_payloadを取得しない。
+復旧worker専用の`SelectSubmissionPayload`が、所有者を検査して受付のpayloadだけを取得する。
+`OnchainDetail.TxPayload`はJSON serialization対象外。取得bytesをログ／外部APIへ流さない。
 
-カラム/制約は承認済みDDLを維持し、未承認の制約や追加テーブルを導入しない。
-数量はASCII VARCHAR(384)の10進文字列で、FLOAT/DOUBLEやSQLの暗黙数値変換を使わない。
-日時はUTC DATETIME(6)。残高・資金予約・TP/SL監視処理・公開APIは今回の実装対象外。
+Storeはprotocol_dataのobject形式と正のversionを検査する。
+version別の具体的な内容、署名検証、チェーン証拠の真正性、必要finalityの判断はadapterが担う。
+この変更はSolanaの実送信adapterやAtomic戦略の実装ではない。
 
-## Go Store
+## 費用
 
-既存storageと同様、StoreはDB接続を所有せず、取得には`api.Executor`、
-変更には呼出元の`*sql.Tx`を受け取る。`NewDefaultStore`または`NewStore`で構成する。
-MySQL接続は`parseTime=true&loc=UTC`を指定し、DBセッションもUTCで運用する。
-日時はUTC・マイクロ秒精度で保存する。
+gasはexecution_succeeded／execution_failed、取引手数料・税はfilled／fill_correctedに紐付ける。
+fees_recorded／fees_adjustedではreference_record_idから該当する結果／約定を辿る。
+onchain gasはそのTxと同じchain・networkの資産を要求する。
+
+1履歴に複数の費用・通貨を保存できる。単位はasset-unit decimalで、base unitsではない。
+正額は費用、負額は還付。asset_decimalsを超える小数・非正規化数値を拒否する。
+accounting_treatmentはadditional／included_in_input／included_in_output／unknown。
+PnL計算時に包含済みfeeを再控除しないための区分であり、Storeは費用を合算・通貨換算しない。
+venue資産のasset_idにはvenueを含む正規識別子を渡す。表示symbolだけで資産を同一視しない。
+
+訂正はfees_adjustedの子として元feeをadjustment_of_fee_idで参照し、符号付き差分を追記する。
+同じ資産・精度・費用種別・包含区分・元の結果／約定への帰属を維持する。
+訂正の訂正も元feeへ参照を向ける。複数の差分は加算可能だが、同じ提供元revisionを再計上しない。
+record_keyとsource_referenceは安定した費用成分の識別子を用いる。
+遅れて受信した元費用を別キー・新revisionで再挿入せず、訂正として表す。
+
+fees_completeはその履歴時点の確認状態。NULL=主張なし、false=未完了、true=確認完了。
+未取得と確認済みゼロを区別でき、遅着時には新しいfees_recordedで主張を追記する。
+元履歴のfees_completeを更新しない。approve gasは保存対象外。
+
+## 取得API
 
 | 操作 | メソッド |
 | --- | --- |
-| 注文とAMM詳細の作成 | InsertOnchainAMMPoolOrder |
+| 注文作成 | InsertOrder |
 | 注文取得・ロック | SelectOrder / SelectOrderForUpdate |
-| 作成キーでの確認 | SelectOrderByIdempotencyKey |
-| AMM詳細取得 | SelectOnchainAMMPoolSwap |
-| 段階・個別約定記録の追加 | InsertExecution |
-| 実行記録取得・ロック | SelectExecutionByKey / SelectExecutionForUpdate |
-| 実行記録のID順ページ取得 | ListExecutions |
-| 注文/実行の状態更新 | UpdateOrderState / UpdateExecutionState |
+| 注文作成キーで取得 | SelectOrderByIdempotencyKey |
+| 履歴・詳細・feesとsnapshotを原子的に追記 | AppendExecution |
+| 履歴再生・有効約定の取得 | ReplayOrder |
+| 履歴の安定キーで取得 | SelectExecutionByKey |
+| 注文履歴のsequence順ページ取得 | ListExecutions |
+| onchain根拠の取得 | SelectOnchainDetail |
+| 復旧材料の限定取得 | SelectSubmissionPayload |
+| 各履歴の費用明細 | ListExecutionFees |
 
-作成時のID=0は自動採番。既存IDを指定することも可能。
-変更メソッドはcommitしない。エラー時は呼出元がトランザクション全体をrollbackする。
-更新は読み取ったStateをexpected、TradeHubが計算した値をnextとして渡す。
-`errors.Is`でErrDuplicate / ErrConflict / ErrInvalidParameter / sql.ErrNoRowsを判別できる。
+全DB読取りにaccountスコープを要求する。ページ上限は200。
+複数ページと子詳細を一貫した時点で読む場合は呼出元のread transactionを使う。
+PnLの価格源・原価対応、fee確認状態のprojection、未解決送信のworker検索は次のTradeHub工程。
 
-部分約定の集計は、同じトランザクションで先に親をロックし、
-`ListExecutions`の全ページを取得してからTradeHubで計算する。
-ページ上限は200。最後のIDをafterIDに渡し、空ページまで取得する。
-トランザクション外の複数ページに一貫したスナップショットは保証しない。
+現在のAppendは親ロック下で全履歴を読み直す。小規模ローカル検証向けの実装であり、
+長大な注文履歴の性能最適化や別のprojection tableは導入していない。
+UPDATE／DELETEの履歴APIはないが、DB管理者の直接SQL操作まで禁止するトリガーは設けない。
 
-`CreateTables`は初期DDLの明示適用用で、既存テーブルへの再適用や変更migrationではない。
-MySQLのDDLはトランザクションでrollbackできないため、通常の注文処理から呼ばない。
+## 検証
 
-## 再現可能な検証
+storageリポジトリから:
 
 ```sh
-# storageリポジトリで実行。Dockerとローカルのmysql:8.4イメージが必要。
-python3 go/mysql/oms/verify_schema.py
 python3 go/mysql/oms/verify_store.py
+# DDLと一部制約だけを確認する場合
+python3 go/mysql/oms/verify_schema.py
+```
 
-# Goモジュール単独の検証
+ランナーは標準ライブラリのみ。ランダムな資格情報・localhostポート・tmpfsのMySQL 8.4を作り、
+`go test -race -count=1 -v ./...`を実行後に専用コンテナを削除する。既存DBへは接続しない。
+同じworkspaceにk4k3ruがある場合、TradeHub001とのDDL一致も検証する。
+
+```sh
 cd go/mysql/oms
 GOWORK=off go test ./...
 GOWORK=off go vet ./...
 GOWORK=off go build ./...
 ```
 
-Pythonランナーは標準ライブラリのみを使用。一意名・データtmpfsの一時MySQLを作り、
-検証後は削除する。既存DB・volume・サービスへ接続しない。
-DDL検証はnetwork=none、Go Store検証はランダムなlocalhostポートで接続する。
+通常のgo testは`K4K3RU_OMS_TEST_DSN`未指定時にMySQLテストをskipする。
+DDL比較だけは`K4K3RU_OMS_MIGRATION_PATH`に001の絶対パスを指定して実行できる。
+DB接続は`parseTime=true&loc=UTC`とし、DBセッションもUTCで運用する。
+`CreateTables`は明示的な初期DDL適用専用。通常の発注処理から呼ばない。
 
-DDL検証は外部キー、重複キー、TP/SLのNULL整合、Swap条件、部分約定、取消、rollbackを確認する。
-Store検証は`go test -race -count=1 -v ./...`で、実DBへの保存/取得、account分離、
-部分約定と訂正の一括更新、重複配信、状態競合、並行作成、ロック待ちのキャンセルを確認する。
-通常の`go test`では、`K4K3RU_OMS_TEST_DSN`が未指定の場合にMySQLテストをskipする。
+検証対象は部分約定、訂正・取消、失敗・reorg、複数送信／複数leg、FXの複数通貨費用、
+遅着費用・負gas・訂正差分、所有者／参照分離、同時追記、古いread snapshot、rollback、3チェーンの位置情報。
+Suiの0.1 SUI→0.421965 USDC、gas 0.002619432 SUIをfixtureで検証し、実チェーン送信は行わない。
 
-TradeHubへの組み込み、公開API、Agent E2E、本番migrationへの登録は別工程。
-commit、pushは未実施。
+## TradeHubへの次工程
+
+TradeHubは旧storageモジュールversionと旧APIを参照しており、まだこのStoreへ接続していない。
+本工程ではgo.work・TradeHub go.modを変更していない。接続時には新constructorと追記APIへの修正が必要。
+Database composition、非永続Prepare／approve、Submit受付、結果照合、SDK／Agentの更新を揃える。
+新001適用後でも、それらの完了前に現行Swap経路が動作するようになったことは意味しない。
+今回の検証は一時DBのみで、ユーザーが適用したlocal DBへ追加変更は行わない。

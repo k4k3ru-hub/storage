@@ -18,22 +18,23 @@ import (
 )
 
 const (
-	DefaultOrderTableName     = "oms_orders"
-	DefaultSwapTableName      = "oms_order_onchain_amm_pool_swaps"
-	DefaultExecutionTableName = "oms_order_executions"
+	DefaultOrderTableName         = "oms_orders"
+	DefaultOnchainDetailTableName = "oms_order_execution_onchain_details"
+	DefaultFeeTableName           = "oms_order_execution_fees"
+	DefaultExecutionTableName     = "oms_order_executions"
 )
 
 //go:embed schema.proposed.sql
 var reviewedSchema string
 
-type Store struct{ orderTable, swapTable, executionTable string }
+type Store struct{ orderTable, executionTable, onchainDetailTable, feeTable string }
 
 // NewStore composes an OMS store with explicit table names and no database ownership.
 //
 // Version:
-//   - 2026-09-20: Added.
-func NewStore(orderTable, swapTable, executionTable string) (*Store, error) {
-	names := []string{orderTable, swapTable, executionTable}
+//   - 2026-09-26: Use the four-table append-only OMS schema.
+func NewStore(orderTable, executionTable, onchainDetailTable, feeTable string) (*Store, error) {
+	names := []string{orderTable, executionTable, onchainDetailTable, feeTable}
 	seen := map[string]bool{}
 	for _, name := range names {
 		if err := validator.ValidateSQLIdentifier(name, "table_name"); err != nil {
@@ -47,32 +48,32 @@ func NewStore(orderTable, swapTable, executionTable string) (*Store, error) {
 		}
 		seen[strings.ToLower(name)] = true
 	}
-	return &Store{orderTable, swapTable, executionTable}, nil
+	return &Store{orderTable, executionTable, onchainDetailTable, feeTable}, nil
 }
 
 // NewDefaultStore composes a store using the reviewed OMS table names.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Use the four-table append-only OMS schema.
 func NewDefaultStore() (*Store, error) {
-	return NewStore(DefaultOrderTableName, DefaultSwapTableName, DefaultExecutionTableName)
+	return NewStore(DefaultOrderTableName, DefaultExecutionTableName, DefaultOnchainDetailTableName, DefaultFeeTableName)
 }
 
 // CreateTables applies the reviewed initial DDL using an application-owned executor.
 // MySQL DDL is not transactional; invoke this only from explicit migration code.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Use the four-table append-only OMS schema.
 func (s *Store) CreateTables(ctx context.Context, executor api.Executor) error {
 	if err := s.guard(ctx, executor); err != nil {
 		return fmt.Errorf("failed to create oms tables: %w", err)
 	}
-	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultSwapTableName: s.swapTable, DefaultExecutionTableName: s.executionTable}
+	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainDetailTableName: s.onchainDetailTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable}
 	// Replace whole identifiers, never substrings of constraint names or supplied names.
-	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_onchain_amm_pool_swaps|oms_order_executions)\b`)
+	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_details|oms_order_execution_fees|oms_order_executions)\b`)
 	schema := identifier.ReplaceAllStringFunc(reviewedSchema, func(name string) string { return quoted(names[name]) })
-	if s.orderTable != DefaultOrderTableName || s.swapTable != DefaultSwapTableName || s.executionTable != DefaultExecutionTableName {
-		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.swapTable + "/" + s.executionTable))
+	if s.orderTable != DefaultOrderTableName || s.onchainDetailTable != DefaultOnchainDetailTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName {
+		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.onchainDetailTable + "/" + s.feeTable + "/" + s.executionTable))
 		constraint := regexp.MustCompile(`CONSTRAINT ([a-zA-Z0-9_]+)`)
 		schema = constraint.ReplaceAllStringFunc(schema, func(value string) string { return value + fmt.Sprintf("_%x", hash[:4]) })
 	}
@@ -96,7 +97,7 @@ func (s *Store) CreateTables(ctx context.Context, executor api.Executor) error {
 }
 func quoted(name string) string { return "`" + name + "`" }
 func (s *Store) guard(ctx context.Context, executor api.Executor) error {
-	if s == nil || s.orderTable == "" || s.swapTable == "" || s.executionTable == "" || ctx == nil || executor == nil {
+	if s == nil || s.orderTable == "" || s.onchainDetailTable == "" || s.feeTable == "" || s.executionTable == "" || ctx == nil || executor == nil {
 		return invalid("dependency", "null")
 	}
 	value := reflect.ValueOf(executor)
@@ -135,10 +136,7 @@ func sameTime(a, b *time.Time) bool {
 }
 func sameUint(a, b *uint64) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
 func orderStateEqual(a, b OrderState) bool {
-	return a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameTime(a.CompletedAt, b.CompletedAt)
-}
-func executionStateEqual(a, b ExecutionState) bool {
-	return a.Status == b.Status && sameString(a.ExecutionID, b.ExecutionID) && sameString(a.Quantity, b.Quantity) && sameString(a.CounterQuantity, b.CounterQuantity) && sameUint(a.SourceVersion, b.SourceVersion) && utc(a.OccurredAt).Equal(utc(b.OccurredAt)) && sameTime(a.ExpiresAt, b.ExpiresAt)
+	return a.LastExecutionSequence == b.LastExecutionSequence && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameTime(a.CompletedAt, b.CompletedAt)
 }
 func identity(accountID, orderID uint64) error {
 	if accountID == 0 || orderID == 0 {
@@ -152,7 +150,7 @@ type scanner interface{ Scan(...any) error }
 // SelectOrderForUpdate locks an owned order in the caller's transaction.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Use the four-table append-only OMS schema.
 func (s *Store) SelectOrderForUpdate(ctx context.Context, tx *sql.Tx, accountID, orderID uint64) (*Order, error) {
 	return s.selectOrder(ctx, tx, accountID, orderID, true)
 }
@@ -160,7 +158,7 @@ func (s *Store) SelectOrderForUpdate(ctx context.Context, tx *sql.Tx, accountID,
 // SelectOrder retrieves an owned order and preserves sql.ErrNoRows for missing records.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Use the four-table append-only OMS schema.
 func (s *Store) SelectOrder(ctx context.Context, executor api.Executor, accountID, orderID uint64) (*Order, error) {
 	return s.selectOrder(ctx, executor, accountID, orderID, false)
 }
@@ -186,7 +184,7 @@ func (s *Store) selectOrder(ctx context.Context, executor api.Executor, accountI
 // SelectOrderByIdempotencyKey finds a previously created order after a duplicate or lost response.
 //
 // Version:
-//   - 2026-09-20: Added.
+//   - 2026-09-26: Use the four-table append-only OMS schema.
 func (s *Store) SelectOrderByIdempotencyKey(ctx context.Context, executor api.Executor, accountID uint64, key []byte) (*Order, error) {
 	const op = "failed to select oms order by idempotency key"
 	if err := s.guard(ctx, executor); err != nil {
@@ -203,25 +201,4 @@ func (s *Store) SelectOrderByIdempotencyKey(ctx context.Context, executor api.Ex
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return value, nil
-}
-
-// UpdateOrderState stores a TradeHub-decided state only when the locked snapshot matches expected.
-// The caller must commit it together with the corresponding execution-record writes.
-//
-// Version:
-//   - 2026-09-20: Added.
-func (s *Store) UpdateOrderState(ctx context.Context, tx *sql.Tx, accountID, orderID uint64, expected, next OrderState) error {
-	const op = "failed to update oms order state"
-	if err := next.Validate(); err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	current, err := s.SelectOrderForUpdate(ctx, tx, accountID, orderID)
-	if err != nil {
-		return fmt.Errorf("%s: %w", op, err)
-	}
-	if !orderStateEqual(current.OrderState, expected) {
-		return fmt.Errorf("%s: %w", op, ErrConflict)
-	}
-	_, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.orderTable)+" SET status=?,quantity=?,filled_quantity=?,completed_at=? WHERE account_id=? AND id=?", next.Status, next.Quantity, next.FilledQuantity, optionalTime(next.CompletedAt), accountID, orderID)
-	return writeError(op, err)
 }
