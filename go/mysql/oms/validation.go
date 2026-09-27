@@ -146,14 +146,14 @@ func unitDecimal(field, value string, decimals uint16, signed bool) error {
 	}
 	return nil
 }
-func isFill(t ExecutionType) bool   { return t == ExecutionTypeFilled || t == ExecutionTypeFillCorrected }
-func isResult(t ExecutionType) bool { return t == ExecutionTypeSucceeded || t == ExecutionTypeFailed }
-func isOrderFact(t ExecutionType) bool {
-	return t == ExecutionTypeOrderCanceled || t == ExecutionTypeOrderExpired || t == ExecutionTypeOrderRejected || t == ExecutionTypeOrderFailed
+func isFill(t EventType) bool   { return t == EventTypeFilled || t == EventTypeFillCorrected }
+func isResult(t EventType) bool { return t == EventTypeSucceeded || t == EventTypeFailed }
+func isOrderFact(t EventType) bool {
+	return t == EventTypeOrderCanceled || t == EventTypeOrderExpired || t == EventTypeOrderRejected || t == EventTypeOrderFailed
 }
-func needsReference(t ExecutionType) bool {
+func needsReference(t EventType) bool {
 	switch t {
-	case ExecutionTypeReversed, ExecutionTypeFillReversed, ExecutionTypeFillCorrected, ExecutionTypeFeesRecorded, ExecutionTypeFeesAdjusted, ExecutionTypeEvidenceRecorded:
+	case EventTypeReversed, EventTypeFillReversed, EventTypeFillCorrected, EventTypeFeesRecorded, EventTypeFeesAdjusted, EventTypeEvidenceRecorded:
 		return true
 	}
 	return false
@@ -235,18 +235,26 @@ func (s OrderState) Validate() error {
 	return nil
 }
 
-// Validate validates one immutable execution fact; references are checked during replay.
+// Validate validates one immutable event; references are checked during replay.
 //
 // Version:
-//   - 2026-09-26: Replace mutable execution stages with immutable facts.
-func (e Execution) Validate() error {
-	if e.ID == 0 || e.OrderID == 0 || e.Sequence == 0 {
+//   - 2026-09-26: Validate immutable events owned by an execution snapshot.
+func (e Event) Validate() error {
+	if e.RequestedQuantity != nil {
+		if e.EventType != EventTypeSubmissionAccepted {
+			return invalid("requested_quantity", "invalid")
+		}
+		if err := optionalDecimal("requested_quantity", e.RequestedQuantity); err != nil {
+			return err
+		}
+	}
+	if e.ID == 0 || e.OrderID == 0 || e.ExecutionRecordID == 0 || e.Sequence == 0 {
 		return invalid("identity", "empty")
 	}
-	switch e.ExecType {
-	case ExecutionTypeSubmissionAccepted, ExecutionTypeSubmitted, ExecutionTypeSubmissionRejected, ExecutionTypeSucceeded, ExecutionTypeFailed, ExecutionTypeReversed, ExecutionTypeFilled, ExecutionTypeFillReversed, ExecutionTypeFillCorrected, ExecutionTypeFeesRecorded, ExecutionTypeFeesAdjusted, ExecutionTypeEvidenceRecorded, ExecutionTypeOrderCanceled, ExecutionTypeOrderExpired, ExecutionTypeOrderRejected, ExecutionTypeOrderFailed:
+	switch e.EventType {
+	case EventTypeSubmissionAccepted, EventTypeSubmitted, EventTypeSubmissionRejected, EventTypeSucceeded, EventTypeFailed, EventTypeReversed, EventTypeFilled, EventTypeFillReversed, EventTypeFillCorrected, EventTypeFeesRecorded, EventTypeFeesAdjusted, EventTypeEvidenceRecorded, EventTypeOrderCanceled, EventTypeOrderExpired, EventTypeOrderRejected, EventTypeOrderFailed:
 	default:
-		return invalid("exec_type", "invalid")
+		return invalid("event_type", "invalid")
 	}
 	if err := binaryKey("record_key", e.RecordKey); err != nil {
 		return err
@@ -263,27 +271,23 @@ func (e Execution) Validate() error {
 	if err := validTime("occurred_at", e.OccurredAt); err != nil {
 		return err
 	}
-	if e.SubmissionRecordID != nil && (*e.SubmissionRecordID == 0 || *e.SubmissionRecordID == e.ID) {
-		return invalid("submission_record_id", "invalid")
+	if e.SubmissionEventID != nil && (*e.SubmissionEventID == 0 || *e.SubmissionEventID == e.ID) {
+		return invalid("submission_event_id", "invalid")
 	}
-	if e.ReferenceRecordID != nil && (*e.ReferenceRecordID == 0 || *e.ReferenceRecordID == e.ID) {
-		return invalid("reference_record_id", "invalid")
+	if e.ReferenceEventID != nil && (*e.ReferenceEventID == 0 || *e.ReferenceEventID == e.ID) {
+		return invalid("reference_event_id", "invalid")
 	}
-	if e.ExecType == ExecutionTypeSubmissionAccepted {
-		if e.SubmissionRecordID != nil || e.ExecutionID == nil || e.Venue == nil {
+	if e.EventType == EventTypeSubmissionAccepted {
+		if e.SubmissionEventID != nil || e.ExecutionID == nil || e.Venue == nil {
 			return invalid("submission", "invalid")
 		}
-	} else if isOrderFact(e.ExecType) {
-		if e.SubmissionRecordID != nil || e.ExecutionID != nil {
-			return invalid("order_fact", "invalid")
-		}
-	} else if e.SubmissionRecordID == nil || e.ExecutionID == nil {
+	} else if e.SubmissionEventID == nil || e.ExecutionID == nil {
 		return invalid("submission", "null")
 	}
-	if needsReference(e.ExecType) && e.ReferenceRecordID == nil {
-		return invalid("reference_record_id", "null")
+	if needsReference(e.EventType) && e.ReferenceEventID == nil {
+		return invalid("reference_event_id", "null")
 	}
-	if isFill(e.ExecType) {
+	if isFill(e.EventType) {
 		if e.Quantity == nil || e.CounterQuantity == nil || e.OrderQuantity == nil || e.QuantityAssetID == nil || e.CounterAssetID == nil || e.QuantityDecimals == nil || e.CounterDecimals == nil {
 			return invalid("fill", "null")
 		}
@@ -319,8 +323,8 @@ func (e Execution) Validate() error {
 //
 // Version:
 //   - 2026-09-26: Added.
-func (d OnchainDetail) Validate() error {
-	if d.ExecutionRecordID == 0 || d.OrderID == 0 {
+func (d OnchainEvidence) Validate() error {
+	if d.EventID == 0 || d.OrderID == 0 {
 		return invalid("identity", "empty")
 	}
 	unit := map[string]string{"evm": "block", "solana": "slot", "sui": "checkpoint"}[d.ChainFamily]
@@ -364,7 +368,7 @@ func (d OnchainDetail) Validate() error {
 			return invalid("finality_level", "invalid")
 		}
 	}
-	if d.ExecType == ExecutionTypeSubmissionAccepted {
+	if d.EventType == EventTypeSubmissionAccepted {
 		if d.LedgerUnit != nil || d.EventPosition != nil || d.SignerID == nil || d.PayloadDigest == nil || d.PayloadEncoding == nil || len(d.TxPayload) == 0 {
 			return invalid("acceptance", "invalid")
 		}
@@ -374,12 +378,12 @@ func (d OnchainDetail) Validate() error {
 	} else if d.SignerID != nil || d.RecipientID != nil || d.PayloadDigest != nil || d.PayloadEncoding != nil || d.TxPayload != nil {
 		return invalid("acceptance", "invalid")
 	}
-	if isResult(d.ExecType) || isFill(d.ExecType) {
+	if isResult(d.EventType) || isFill(d.EventType) {
 		if d.LedgerUnit == nil || d.FinalityLevel == nil {
 			return invalid("ledger", "null")
 		}
 	}
-	if isFill(d.ExecType) {
+	if isFill(d.EventType) {
 		if d.EventPosition == nil {
 			return invalid("event_position", "null")
 		}
@@ -408,7 +412,7 @@ func eventPosition(family, value string) error {
 // Version:
 //   - 2026-09-26: Added.
 func (f ExecutionFee) Validate() error {
-	if f.ID == 0 || f.OrderID == 0 || f.ExecutionRecordID == 0 {
+	if f.ID == 0 || f.OrderID == 0 || f.ExecutionRecordID == 0 || f.EventID == 0 {
 		return invalid("identity", "empty")
 	}
 	if f.AdjustmentOfFeeID != nil && (*f.AdjustmentOfFeeID == 0 || *f.AdjustmentOfFeeID == f.ID) {

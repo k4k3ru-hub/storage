@@ -20,25 +20,25 @@ const (
 	DomainOnchainAMMPool                   = "onchain-amm-pool"
 )
 
-type ExecutionType string
+type EventType string
 
 const (
-	ExecutionTypeSubmissionAccepted ExecutionType = "submission_accepted"
-	ExecutionTypeSubmitted          ExecutionType = "submitted"
-	ExecutionTypeSubmissionRejected ExecutionType = "submission_rejected"
-	ExecutionTypeSucceeded          ExecutionType = "execution_succeeded"
-	ExecutionTypeFailed             ExecutionType = "execution_failed"
-	ExecutionTypeReversed           ExecutionType = "execution_reversed"
-	ExecutionTypeFilled             ExecutionType = "filled"
-	ExecutionTypeFillReversed       ExecutionType = "fill_reversed"
-	ExecutionTypeFillCorrected      ExecutionType = "fill_corrected"
-	ExecutionTypeFeesRecorded       ExecutionType = "fees_recorded"
-	ExecutionTypeFeesAdjusted       ExecutionType = "fees_adjusted"
-	ExecutionTypeEvidenceRecorded   ExecutionType = "evidence_recorded"
-	ExecutionTypeOrderCanceled      ExecutionType = "order_canceled"
-	ExecutionTypeOrderExpired       ExecutionType = "order_expired"
-	ExecutionTypeOrderRejected      ExecutionType = "order_rejected"
-	ExecutionTypeOrderFailed        ExecutionType = "order_failed"
+	EventTypeSubmissionAccepted EventType = "submission_accepted"
+	EventTypeSubmitted          EventType = "submitted"
+	EventTypeSubmissionRejected EventType = "submission_rejected"
+	EventTypeSucceeded          EventType = "execution_succeeded"
+	EventTypeFailed             EventType = "execution_failed"
+	EventTypeReversed           EventType = "execution_reversed"
+	EventTypeFilled             EventType = "filled"
+	EventTypeFillReversed       EventType = "fill_reversed"
+	EventTypeFillCorrected      EventType = "fill_corrected"
+	EventTypeFeesRecorded       EventType = "fees_recorded"
+	EventTypeFeesAdjusted       EventType = "fees_adjusted"
+	EventTypeEvidenceRecorded   EventType = "evidence_recorded"
+	EventTypeOrderCanceled      EventType = "order_canceled"
+	EventTypeOrderExpired       EventType = "order_expired"
+	EventTypeOrderRejected      EventType = "order_rejected"
+	EventTypeOrderFailed        EventType = "order_failed"
 )
 
 var (
@@ -47,15 +47,16 @@ var (
 	ErrInvalidParameter  = errors.New("failed to validate oms parameters")
 	orderIDGenerator     generator.ID
 	executionIDGenerator generator.ID
+	eventIDGenerator     generator.ID
 	feeIDGenerator       generator.ID
 )
 
 type OrderState struct {
-	Status                OrderStatus
-	Quantity              *string
-	FilledQuantity        string
-	CompletedAt           *time.Time
-	LastExecutionSequence uint64
+	Status            OrderStatus
+	Quantity          *string
+	FilledQuantity    string
+	CompletedAt       *time.Time
+	LastEventSequence uint64
 }
 type Order struct {
 	ID, AccountID                                           uint64
@@ -70,10 +71,37 @@ type Order struct {
 	ExpiresAt                                                                *time.Time
 	CreatedAt, UpdatedAt                                                     time.Time
 }
+type ExecutionStatus string
+
+const (
+	ExecutionStatusPending         ExecutionStatus = "pending"
+	ExecutionStatusPartiallyFilled ExecutionStatus = "partially_filled"
+	ExecutionStatusFilled          ExecutionStatus = "filled"
+	ExecutionStatusSucceeded       ExecutionStatus = "succeeded"
+	ExecutionStatusFailed          ExecutionStatus = "failed"
+	ExecutionStatusRejected        ExecutionStatus = "rejected"
+)
+
+// Execution is the current state of one routed execution. Quantities use the order's unit.
 type Execution struct {
+	ID, OrderID                                      uint64
+	ExecutionSystem, ExecutionID, EventFamily, Venue string
+	Status                                           ExecutionStatus
+	Quantity                                         *string
+	FilledQuantity                                   string
+	FeesComplete                                     bool
+	LastEventSequence                                uint64
+	CompletedAt                                      *time.Time
+	CreatedAt, UpdatedAt                             time.Time
+}
+
+// Event is the common projection input stored within an adapter's event table.
+type Event struct {
+	ExecutionRecordID                                          uint64
+	RequestedQuantity                                          *string
 	ID, OrderID, Sequence                                      uint64
-	ExecType                                                   ExecutionType
-	SubmissionRecordID, ReferenceRecordID                      *uint64
+	EventType                                                  EventType
+	SubmissionEventID, ReferenceEventID                        *uint64
 	RecordKey                                                  []byte
 	ExecutionSystem                                            string
 	ExecutionID, Venue                                         *string
@@ -84,9 +112,9 @@ type Execution struct {
 	SourceVersion                                              *uint64
 	OccurredAt, RecordedAt                                     time.Time
 }
-type OnchainDetail struct {
-	ExecutionRecordID, OrderID                            uint64
-	ExecType                                              ExecutionType
+type OnchainEvidence struct {
+	EventID, OrderID                                      uint64
+	EventType                                             EventType
 	ChainFamily, Chain, Network, TxID                     string
 	LedgerUnit                                            *string
 	LedgerSequence                                        *uint64
@@ -100,7 +128,7 @@ type OnchainDetail struct {
 	ProtocolData                                          json.RawMessage
 }
 type ExecutionFee struct {
-	ID, OrderID, ExecutionRecordID               uint64
+	ID, OrderID, ExecutionRecordID, EventID      uint64
 	AdjustmentOfFeeID                            *uint64
 	RecordKey                                    []byte
 	FeeType, AccountingTreatment, AssetNamespace string
@@ -112,17 +140,19 @@ type ExecutionFee struct {
 	OccurredAt, RecordedAt                       time.Time
 }
 
-// ExecutionRecord is the atomic append unit. Zero child IDs are assigned by AppendExecution.
-type ExecutionRecord struct {
-	Execution Execution
-	Onchain   *OnchainDetail
-	Fees      []ExecutionFee
+// OnchainEvent is the atomic append unit. Zero child IDs are assigned by AppendOnchainEvent.
+type OnchainEvent struct {
+	Event   Event
+	Onchain *OnchainEvidence
+	Fees    []ExecutionFee
 }
 type AppendResult struct {
-	ExecutionID uint64
-	Sequence    uint64
-	Duplicate   bool
-	State       OrderState
+	EventID           uint64
+	ExecutionRecordID uint64
+	Execution         Execution
+	Sequence          uint64
+	Duplicate         bool
+	State             OrderState
 }
 
 // GenerateOrderID generates an OMS order identifier.
@@ -131,14 +161,20 @@ type AppendResult struct {
 //   - 2026-09-20: Added.
 func GenerateOrderID() uint64 { return orderIDGenerator.Generate() }
 
-// GenerateExecutionID generates an immutable execution-record identifier.
+// GenerateEventID generates an immutable event identifier.
 //
 // Version:
-//   - 2026-09-26: Distinguish record IDs from public submission IDs.
-func GenerateExecutionID() uint64 { return executionIDGenerator.Generate() }
+//   - 2026-09-26: Distinguish event IDs from execution snapshot IDs.
+func GenerateEventID() uint64 { return eventIDGenerator.Generate() }
 
 // GenerateFeeID generates a fee-component identifier.
 //
 // Version:
 //   - 2026-09-26: Added.
 func GenerateFeeID() uint64 { return feeIDGenerator.Generate() }
+
+// GenerateExecutionID generates a stable execution snapshot identifier.
+//
+// Version:
+//   - 2026-09-26: Allocate snapshots separately from their events.
+func GenerateExecutionID() uint64 { return executionIDGenerator.Generate() }

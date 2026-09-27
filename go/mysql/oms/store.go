@@ -18,23 +18,23 @@ import (
 )
 
 const (
-	DefaultOrderTableName         = "oms_orders"
-	DefaultOnchainDetailTableName = "oms_order_execution_onchain_details"
-	DefaultFeeTableName           = "oms_order_execution_fees"
-	DefaultExecutionTableName     = "oms_order_executions"
+	DefaultOrderTableName        = "oms_orders"
+	DefaultOnchainEventTableName = "oms_order_execution_onchain_events"
+	DefaultFeeTableName          = "oms_order_execution_fees"
+	DefaultExecutionTableName    = "oms_order_executions"
 )
 
 //go:embed schema.proposed.sql
 var reviewedSchema string
 
-type Store struct{ orderTable, executionTable, onchainDetailTable, feeTable string }
+type Store struct{ orderTable, executionTable, onchainEventTable, feeTable string }
 
 // NewStore composes an OMS store with explicit table names and no database ownership.
 //
 // Version:
-//   - 2026-09-26: Use the four-table append-only OMS schema.
-func NewStore(orderTable, executionTable, onchainDetailTable, feeTable string) (*Store, error) {
-	names := []string{orderTable, executionTable, onchainDetailTable, feeTable}
+//   - 2026-09-26: Separate execution snapshots and onchain event history.
+func NewStore(orderTable, executionTable, onchainEventTable, feeTable string) (*Store, error) {
+	names := []string{orderTable, executionTable, onchainEventTable, feeTable}
 	seen := map[string]bool{}
 	for _, name := range names {
 		if err := validator.ValidateSQLIdentifier(name, "table_name"); err != nil {
@@ -48,32 +48,32 @@ func NewStore(orderTable, executionTable, onchainDetailTable, feeTable string) (
 		}
 		seen[strings.ToLower(name)] = true
 	}
-	return &Store{orderTable, executionTable, onchainDetailTable, feeTable}, nil
+	return &Store{orderTable, executionTable, onchainEventTable, feeTable}, nil
 }
 
 // NewDefaultStore composes a store using the reviewed OMS table names.
 //
 // Version:
-//   - 2026-09-26: Use the four-table append-only OMS schema.
+//   - 2026-09-26: Separate execution snapshots and onchain event history.
 func NewDefaultStore() (*Store, error) {
-	return NewStore(DefaultOrderTableName, DefaultExecutionTableName, DefaultOnchainDetailTableName, DefaultFeeTableName)
+	return NewStore(DefaultOrderTableName, DefaultExecutionTableName, DefaultOnchainEventTableName, DefaultFeeTableName)
 }
 
 // CreateTables applies the reviewed initial DDL using an application-owned executor.
 // MySQL DDL is not transactional; invoke this only from explicit migration code.
 //
 // Version:
-//   - 2026-09-26: Use the four-table append-only OMS schema.
+//   - 2026-09-26: Separate execution snapshots and onchain event history.
 func (s *Store) CreateTables(ctx context.Context, executor api.Executor) error {
 	if err := s.guard(ctx, executor); err != nil {
 		return fmt.Errorf("failed to create oms tables: %w", err)
 	}
-	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainDetailTableName: s.onchainDetailTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable}
+	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainEventTableName: s.onchainEventTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable}
 	// Replace whole identifiers, never substrings of constraint names or supplied names.
-	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_details|oms_order_execution_fees|oms_order_executions)\b`)
+	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_events|oms_order_execution_fees|oms_order_executions)\b`)
 	schema := identifier.ReplaceAllStringFunc(reviewedSchema, func(name string) string { return quoted(names[name]) })
-	if s.orderTable != DefaultOrderTableName || s.onchainDetailTable != DefaultOnchainDetailTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName {
-		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.onchainDetailTable + "/" + s.feeTable + "/" + s.executionTable))
+	if s.orderTable != DefaultOrderTableName || s.onchainEventTable != DefaultOnchainEventTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName {
+		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.onchainEventTable + "/" + s.feeTable + "/" + s.executionTable))
 		constraint := regexp.MustCompile(`CONSTRAINT ([a-zA-Z0-9_]+)`)
 		schema = constraint.ReplaceAllStringFunc(schema, func(value string) string { return value + fmt.Sprintf("_%x", hash[:4]) })
 	}
@@ -97,7 +97,7 @@ func (s *Store) CreateTables(ctx context.Context, executor api.Executor) error {
 }
 func quoted(name string) string { return "`" + name + "`" }
 func (s *Store) guard(ctx context.Context, executor api.Executor) error {
-	if s == nil || s.orderTable == "" || s.onchainDetailTable == "" || s.feeTable == "" || s.executionTable == "" || ctx == nil || executor == nil {
+	if s == nil || s.orderTable == "" || s.onchainEventTable == "" || s.feeTable == "" || s.executionTable == "" || ctx == nil || executor == nil {
 		return invalid("dependency", "null")
 	}
 	value := reflect.ValueOf(executor)
@@ -136,7 +136,7 @@ func sameTime(a, b *time.Time) bool {
 }
 func sameUint(a, b *uint64) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
 func orderStateEqual(a, b OrderState) bool {
-	return a.LastExecutionSequence == b.LastExecutionSequence && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameTime(a.CompletedAt, b.CompletedAt)
+	return a.LastEventSequence == b.LastEventSequence && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameTime(a.CompletedAt, b.CompletedAt)
 }
 func identity(accountID, orderID uint64) error {
 	if accountID == 0 || orderID == 0 {
@@ -150,7 +150,7 @@ type scanner interface{ Scan(...any) error }
 // SelectOrderForUpdate locks an owned order in the caller's transaction.
 //
 // Version:
-//   - 2026-09-26: Use the four-table append-only OMS schema.
+//   - 2026-09-26: Separate execution snapshots and onchain event history.
 func (s *Store) SelectOrderForUpdate(ctx context.Context, tx *sql.Tx, accountID, orderID uint64) (*Order, error) {
 	return s.selectOrder(ctx, tx, accountID, orderID, true)
 }
@@ -158,7 +158,7 @@ func (s *Store) SelectOrderForUpdate(ctx context.Context, tx *sql.Tx, accountID,
 // SelectOrder retrieves an owned order and preserves sql.ErrNoRows for missing records.
 //
 // Version:
-//   - 2026-09-26: Use the four-table append-only OMS schema.
+//   - 2026-09-26: Separate execution snapshots and onchain event history.
 func (s *Store) SelectOrder(ctx context.Context, executor api.Executor, accountID, orderID uint64) (*Order, error) {
 	return s.selectOrder(ctx, executor, accountID, orderID, false)
 }
@@ -184,7 +184,7 @@ func (s *Store) selectOrder(ctx context.Context, executor api.Executor, accountI
 // SelectOrderByIdempotencyKey finds a previously created order after a duplicate or lost response.
 //
 // Version:
-//   - 2026-09-26: Use the four-table append-only OMS schema.
+//   - 2026-09-26: Separate execution snapshots and onchain event history.
 func (s *Store) SelectOrderByIdempotencyKey(ctx context.Context, executor api.Executor, accountID uint64, key []byte) (*Order, error) {
 	const op = "failed to select oms order by idempotency key"
 	if err := s.guard(ctx, executor); err != nil {

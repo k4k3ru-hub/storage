@@ -25,7 +25,7 @@ func (s *Store) InsertOrder(ctx context.Context, tx *sql.Tx, order Order) (uint6
 	if order.FilledQuantity == "" {
 		order.FilledQuantity = "0"
 	}
-	if order.Status != OrderStatusPending || order.FilledQuantity != "0" || order.CompletedAt != nil || order.LastExecutionSequence != 0 {
+	if order.Status != OrderStatusPending || order.FilledQuantity != "0" || order.CompletedAt != nil || order.LastEventSequence != 0 {
 		return 0, fmt.Errorf("%s: %w", op, invalid("initial_state", "invalid"))
 	}
 	order.CreatedAt = created(order.CreatedAt)

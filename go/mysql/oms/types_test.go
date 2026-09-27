@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -18,33 +19,38 @@ var fixtureTime = time.Date(2026, 9, 26, 1, 2, 3, 123456000, time.UTC)
 func testOrder() Order {
 	return Order{ID: 1, AccountID: 1, AccountRef: "wallet", AssetClass: "crypto", Domain: DomainOnchainAMMPool, Symbol: "SUI/USDC", Side: "exchange", OrderType: "market", OrderState: OrderState{Status: OrderStatusPending, Quantity: ptr("100"), FilledQuantity: "0"}, SpecificationVersion: 1, Specification: json.RawMessage(`{"quantityUnit":"SUI"}`), IdempotencyKey: []byte("order")}
 }
-func acceptance(id, orderID uint64) ExecutionRecord {
-	return ExecutionRecord{Execution: Execution{ID: id, OrderID: orderID, ExecType: ExecutionTypeSubmissionAccepted, RecordKey: []byte("accept"), ExecutionSystem: "tradehub", ExecutionID: ptr("exec_one"), Venue: ptr("cetus"), OccurredAt: fixtureTime}}
+func acceptance(id, orderID uint64) OnchainEvent {
+	return OnchainEvent{Onchain: testAcceptanceEvidence(id), Event: Event{ExecutionRecordID: id, RequestedQuantity: ptr("100"), ID: id, OrderID: orderID, EventType: EventTypeSubmissionAccepted, RecordKey: []byte("accept"), ExecutionSystem: "tradehub", ExecutionID: ptr("exec_one"), Venue: ptr("cetus"), OccurredAt: fixtureTime}}
 }
-func fill(id, orderID, root uint64, key, quantity string) ExecutionRecord {
-	return ExecutionRecord{Execution: Execution{ID: id, OrderID: orderID, ExecType: ExecutionTypeFilled, SubmissionRecordID: ptr(root), RecordKey: []byte(key), ExecutionSystem: "tradehub", ExecutionID: ptr("exec_one"), Quantity: ptr(quantity), CounterQuantity: ptr("1"), QuantityAssetID: ptr("sui:testnet:SUI"), CounterAssetID: ptr("sui:testnet:USDC"), QuantityDecimals: ptr(uint16(9)), CounterDecimals: ptr(uint16(6)), OrderQuantity: ptr(quantity), OccurredAt: fixtureTime}}
+func fill(id, orderID, root uint64, key, quantity string) OnchainEvent {
+	return OnchainEvent{Onchain: testFillEvidence(root, key), Event: Event{ExecutionRecordID: root, ID: id, OrderID: orderID, EventType: EventTypeFilled, SubmissionEventID: ptr(root), RecordKey: []byte(key), ExecutionSystem: "tradehub", ExecutionID: ptr("exec_one"), Quantity: ptr(quantity), CounterQuantity: ptr("1"), QuantityAssetID: ptr("sui:testnet:SUI"), CounterAssetID: ptr("sui:testnet:USDC"), QuantityDecimals: ptr(uint16(9)), CounterDecimals: ptr(uint16(6)), OrderQuantity: ptr(quantity), OccurredAt: fixtureTime}}
 }
-func fact(id, orderID, root uint64, kind ExecutionType, key string) ExecutionRecord {
-	r := ExecutionRecord{Execution: Execution{ID: id, OrderID: orderID, ExecType: kind, RecordKey: []byte(key), ExecutionSystem: "tradehub", OccurredAt: fixtureTime}}
-	if !isOrderFact(kind) {
-		r.Execution.SubmissionRecordID = ptr(root)
-		r.Execution.ExecutionID = ptr("exec_one")
+func fact(id, orderID, root uint64, kind EventType, key string) OnchainEvent {
+	r := OnchainEvent{Event: Event{ID: id, OrderID: orderID, EventType: kind, RecordKey: []byte(key), ExecutionSystem: "tradehub", OccurredAt: fixtureTime}}
+	if root == 0 {
+		root = 1
+	}
+	r.Event.ExecutionRecordID = root
+	r.Onchain = testEventEvidence(root, kind)
+	{
+		r.Event.SubmissionEventID = ptr(root)
+		r.Event.ExecutionID = ptr("exec_one")
 	}
 	return r
 }
-func acceptanceDetail(family string) *OnchainDetail {
-	return &OnchainDetail{ChainFamily: family, Chain: family, Network: "testnet", TxID: "CaseSensitiveTx", SignerID: ptr("signer"), PayloadDigest: ptr("digest"), PayloadEncoding: ptr("fixture"), TxPayload: []byte("signed-fixture-payload"), ProtocolVersion: 1, ProtocolData: json.RawMessage(`{"b":2,"a":1}`)}
+func acceptanceDetail(family string) *OnchainEvidence {
+	return &OnchainEvidence{ChainFamily: family, Chain: family, Network: "testnet", TxID: "CaseSensitiveTx", SignerID: ptr("signer"), PayloadDigest: ptr("digest"), PayloadEncoding: ptr("fixture"), TxPayload: []byte("signed-fixture-payload"), ProtocolVersion: 1, ProtocolData: json.RawMessage(`{"b":2,"a":1}`)}
 }
-func resultDetail(family string) *OnchainDetail {
-	return &OnchainDetail{ChainFamily: family, Chain: family, Network: "testnet", TxID: "CaseSensitiveTx", LedgerUnit: ptr(map[string]string{"evm": "block", "solana": "slot", "sui": "checkpoint"}[family]), LedgerSequence: ptr(uint64(0)), TxPosition: ptr(uint64(0)), FinalityLevel: ptr("finalized"), ProtocolVersion: 1}
+func resultDetail(family string) *OnchainEvidence {
+	return &OnchainEvidence{ChainFamily: family, Chain: family, Network: "testnet", TxID: "CaseSensitiveTx", LedgerUnit: ptr(map[string]string{"evm": "block", "solana": "slot", "sui": "checkpoint"}[family]), LedgerSequence: ptr(uint64(0)), TxPosition: ptr(uint64(0)), FinalityLevel: ptr("finalized"), ProtocolVersion: 1}
 }
 func fee(key, kind, amount string) ExecutionFee {
 	return ExecutionFee{RecordKey: []byte(key), FeeType: kind, AccountingTreatment: "additional", AssetNamespace: "currency", AssetID: "USD", AssetDecimals: 6, Amount: amount, SourceReference: key, OccurredAt: fixtureTime}
 }
-func sequence(records ...ExecutionRecord) []Execution {
-	out := make([]Execution, len(records))
+func sequence(records ...OnchainEvent) []Event {
+	out := make([]Event, len(records))
 	for i, r := range records {
-		out[i] = r.Execution
+		out[i] = r.Event
 		out[i].Sequence = uint64(i) + 1
 	}
 	return out
@@ -81,9 +87,9 @@ func TestValidation(t *testing.T) {
 			t.Fatal("invalid order accepted")
 		}
 	}
-	for _, kind := range []ExecutionType{"prepared", "approval", "partially_filled"} {
+	for _, kind := range []EventType{"prepared", "approval", "partially_filled"} {
 		e := sequence(acceptance(1, 1))[0]
-		e.ExecType = kind
+		e.EventType = kind
 		if !errors.Is(e.Validate(), ErrInvalidParameter) {
 			t.Fatal("legacy fact accepted")
 		}
@@ -113,6 +119,7 @@ func TestValidation(t *testing.T) {
 		f := fee("fee", "gas", amount)
 		f.ID = 1
 		f.OrderID = 1
+		f.EventID = 1
 		f.ExecutionRecordID = 1
 		if f.Validate() == nil {
 			t.Fatal("invalid fee accepted")
@@ -127,7 +134,7 @@ func TestValidation(t *testing.T) {
 func TestStoreComposition(t *testing.T) {
 	s, err := NewDefaultStore()
 	must(t, err)
-	if s.orderTable != DefaultOrderTableName || s.executionTable != DefaultExecutionTableName || s.onchainDetailTable != DefaultOnchainDetailTableName || s.feeTable != DefaultFeeTableName {
+	if s.orderTable != DefaultOrderTableName || s.executionTable != DefaultExecutionTableName || s.onchainEventTable != DefaultOnchainEventTableName || s.feeTable != DefaultFeeTableName {
 		t.Fatal("wrong composition")
 	}
 	for _, names := range [][4]string{{"", "b", "c", "d"}, {"a;DROP", "b", "c", "d"}, {"a", "A", "c", "d"}, {strings.Repeat("a", 65), "b", "c", "d"}} {
@@ -139,7 +146,7 @@ func TestStoreComposition(t *testing.T) {
 	if _, err := s.SelectOrderForUpdate(context.Background(), tx, 1, 1); !errors.Is(err, ErrInvalidParameter) {
 		t.Fatal("nil tx accepted")
 	}
-	if _, err := s.AppendExecution(context.Background(), tx, 1, acceptance(1, 1)); !errors.Is(err, ErrInvalidParameter) {
+	if _, err := s.AppendOnchainEvent(context.Background(), tx, 1, acceptance(1, 1)); !errors.Is(err, ErrInvalidParameter) {
 		t.Fatal("nil tx append")
 	}
 	if _, err := s.InsertOrder(nil, tx, testOrder()); !errors.Is(err, ErrInvalidParameter) {
@@ -168,38 +175,38 @@ func TestReplayLifecycle(t *testing.T) {
 		}
 	}
 	corrected := fill(4, 1, 1, "correction", "20")
-	corrected.Execution.ExecType = ExecutionTypeFillCorrected
-	corrected.Execution.ReferenceRecordID = ptr(uint64(2))
-	corrected.Execution.SourceVersion = ptr(uint64(2))
+	corrected.Event.EventType = EventTypeFillCorrected
+	corrected.Event.ReferenceEventID = ptr(uint64(2))
+	corrected.Event.SourceVersion = ptr(uint64(2))
 	history = sequence(a, f1, f2, corrected)
 	p, err := ReplayOrder(o, history)
 	must(t, err)
 	if p.State.FilledQuantity != "90" || p.State.Status != OrderStatusPartiallyFilled || p.State.CompletedAt != nil || len(p.ActiveFills) != 2 {
 		t.Fatal("correction did not replace")
 	}
-	reversed := fact(5, 1, 1, ExecutionTypeFillReversed, "reversal")
-	reversed.Execution.ReferenceRecordID = ptr(uint64(4))
-	reversed.Execution.SourceVersion = ptr(uint64(3))
+	reversed := fact(5, 1, 1, EventTypeFillReversed, "reversal")
+	reversed.Event.ReferenceEventID = ptr(uint64(4))
+	reversed.Event.SourceVersion = ptr(uint64(3))
 	p, err = ReplayOrder(o, sequence(a, f1, f2, corrected, reversed))
 	must(t, err)
 	if p.State.FilledQuantity != "70" {
 		t.Fatal("reversal did not subtract")
 	}
 	bad := reversed
-	bad.Execution.ID = 6
-	bad.Execution.RecordKey = []byte("again")
+	bad.Event.ID = 6
+	bad.Event.RecordKey = []byte("again")
 	if _, err := ReplayOrder(o, sequence(a, f1, f2, corrected, reversed, bad)); !errors.Is(err, ErrConflict) {
 		t.Fatal("reversed inactive fill twice")
 	}
 	old := corrected
-	old.Execution.ReferenceRecordID = ptr(uint64(4))
-	old.Execution.ID = 5
-	old.Execution.RecordKey = []byte("stale")
-	old.Execution.SourceVersion = ptr(uint64(1))
+	old.Event.ReferenceEventID = ptr(uint64(4))
+	old.Event.ID = 5
+	old.Event.RecordKey = []byte("stale")
+	old.Event.SourceVersion = ptr(uint64(1))
 	if _, err := ReplayOrder(o, sequence(a, f1, f2, corrected, old)); !errors.Is(err, ErrConflict) {
 		t.Fatal("stale correction accepted")
 	}
-	if *f1.Execution.Quantity != "30" {
+	if *f1.Event.Quantity != "30" {
 		t.Fatal("input mutated")
 	}
 }
@@ -211,42 +218,42 @@ func TestReplayLifecycle(t *testing.T) {
 func TestReplayTermination(t *testing.T) {
 	a := acceptance(1, 1)
 	f := fill(2, 1, 1, "fill", "30")
-	cancel := fact(3, 1, 0, ExecutionTypeOrderCanceled, "cancel")
+	cancel := fact(3, 1, 0, EventTypeOrderCanceled, "cancel")
 	p, err := ReplayOrder(testOrder(), sequence(a, f, cancel))
 	must(t, err)
 	if p.State.Status != OrderStatusCanceled || p.State.FilledQuantity != "30" || p.State.CompletedAt == nil {
 		t.Fatal("cancel lost fill")
 	}
-	failed := fact(2, 1, 1, ExecutionTypeFailed, "failed")
+	failed := fact(2, 1, 1, EventTypeFailed, "failed")
 	p, err = ReplayOrder(testOrder(), sequence(a, failed))
 	must(t, err)
 	if p.State.Status != OrderStatusPending {
 		t.Fatal("single tx failed order")
 	}
-	end := fact(3, 1, 0, ExecutionTypeOrderFailed, "end")
+	end := fact(3, 1, 0, EventTypeOrderFailed, "end")
 	p, err = ReplayOrder(testOrder(), sequence(a, failed, end))
 	must(t, err)
 	if p.State.Status != OrderStatusFailed {
 		t.Fatal("order failure missing")
 	}
-	success := fact(2, 1, 1, ExecutionTypeSucceeded, "success")
+	success := fact(2, 1, 1, EventTypeSucceeded, "success")
 	full := fill(3, 1, 1, "full", "100")
-	reverse := fact(4, 1, 1, ExecutionTypeReversed, "reorg")
-	reverse.Execution.ReferenceRecordID = ptr(uint64(2))
+	reverse := fact(4, 1, 1, EventTypeReversed, "reorg")
+	reverse.Event.ReferenceEventID = ptr(uint64(2))
 	p, err = ReplayOrder(testOrder(), sequence(a, success, full, reverse))
 	must(t, err)
 	if p.State.Status != OrderStatusPending || p.State.FilledQuantity != "0" || p.State.CompletedAt != nil {
 		t.Fatal("reorg left completed fill")
 	}
 	leg := fill(4, 1, 1, "intermediate", "100")
-	leg.Execution.OrderQuantity = ptr("0")
+	leg.Event.OrderQuantity = ptr("0")
 	p, err = ReplayOrder(testOrder(), sequence(a, success, full, leg))
 	must(t, err)
 	if p.State.FilledQuantity != "100" || len(p.ActiveFills) != 2 {
 		t.Fatal("intermediate leg counted twice")
 	}
 	late := fill(4, 1, 1, "late", "30")
-	late.Execution.OccurredAt = fixtureTime.Add(-time.Hour)
+	late.Event.OccurredAt = fixtureTime.Add(-time.Hour)
 	p, err = ReplayOrder(testOrder(), sequence(a, cancel, late))
 	must(t, err)
 	if p.State.FilledQuantity != "30" || p.State.Status != OrderStatusCanceled {
@@ -276,12 +283,63 @@ func TestReplayPrecision(t *testing.T) {
 	if p.State.FilledQuantity != "0.3" || p.State.Status != OrderStatusFilled {
 		t.Fatal("decimal sum rounded")
 	}
-	x.Execution.OrderQuantity = ptr("1." + strings.Repeat("0", 300) + "1")
-	y.Execution.OrderQuantity = ptr("2")
+	x.Event.OrderQuantity = ptr("1." + strings.Repeat("0", 300) + "1")
+	y.Event.OrderQuantity = ptr("2")
 	o.Quantity = nil
 	p, err = ReplayOrder(o, sequence(a, x, y))
 	must(t, err)
 	if p.State.FilledQuantity != "3."+strings.Repeat("0", 300)+"1" {
 		t.Fatal("precision lost")
+	}
+}
+
+func testAcceptanceEvidence(id uint64) *OnchainEvidence {
+	d := acceptanceDetail("sui")
+	d.TxID = fmt.Sprintf("tx-%d", id)
+	return d
+}
+func testEventEvidence(root uint64, kind EventType) *OnchainEvidence {
+	d := resultDetail("sui")
+	d.TxID = fmt.Sprintf("tx-%d", root)
+	if !isResult(kind) && !isFill(kind) {
+		d.LedgerUnit = nil
+		d.LedgerSequence = nil
+		d.TxPosition = nil
+		d.FinalityLevel = nil
+	}
+	return d
+}
+func testFillEvidence(root uint64, key string) *OnchainEvidence {
+	d := testEventEvidence(root, EventTypeFilled)
+	var index uint64
+	for _, r := range key {
+		index = index*31 + uint64(r)
+	}
+	d.EventPosition = ptr(fmt.Sprintf("v1/event/%d", index))
+	return d
+}
+
+// TestReplayExecutionOwnership rejects event references crossing execution snapshots.
+//
+// Version:
+//   - 2026-09-27: Enforce execution identity in the pure history projection.
+func TestReplayExecutionOwnership(t *testing.T) {
+	a := acceptance(1, 1)
+	f := fill(2, 1, 1, "fill", "10")
+	f.Event.ExecutionRecordID = 999
+	if _, err := ReplayOrder(testOrder(), sequence(a, f)); !errors.Is(err, ErrConflict) {
+		t.Fatal("cross-execution event accepted", err)
+	}
+	b := acceptance(3, 1)
+	b.Event.RecordKey = []byte("another")
+	b.Event.ExecutionID = ptr("another")
+	b.Event.ExecutionRecordID = 1
+	if _, err := ReplayOrder(testOrder(), sequence(a, b)); !errors.Is(err, ErrConflict) {
+		t.Fatal("duplicate snapshot root accepted", err)
+	}
+	f.Event.ExecutionRecordID = 0
+	f.Event.Sequence = 2
+	if !errors.Is(f.Event.Validate(), ErrInvalidParameter) {
+		t.Fatal("missing execution parent accepted")
 	}
 }

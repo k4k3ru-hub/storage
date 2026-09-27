@@ -8,7 +8,7 @@ import (
 
 type OrderProjection struct {
 	State       OrderState
-	ActiveFills []Execution
+	ActiveFills []Event
 }
 
 // ReplayOrder rebuilds the snapshot and effective fills from the complete sequence-ordered history.
@@ -17,22 +17,23 @@ type OrderProjection struct {
 //
 // Version:
 //   - 2026-09-26: Added.
-func ReplayOrder(order Order, history []Execution) (*OrderProjection, error) {
+func ReplayOrder(order Order, history []Event) (*OrderProjection, error) {
 	const op = "failed to replay oms order"
 	if err := order.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	state := OrderState{Status: OrderStatusPending, Quantity: order.Quantity, FilledQuantity: "0"}
-	seen := map[uint64]Execution{}
+	seen := map[uint64]Event{}
 	keys := map[string]bool{}
 	publicIDs := map[string]bool{}
-	active := map[uint64]Execution{}
+	executionIDs := map[uint64]bool{}
+	active := map[uint64]Event{}
 	results := map[uint64]uint64{}
 	reversed := map[uint64]bool{}
 	submitted := map[uint64]bool{}
 	total := new(big.Rat)
 	scale := 0
-	var terminal *Execution
+	var terminal *Event
 	conflict := func(field string) (*OrderProjection, error) {
 		return nil, fmt.Errorf("%s: %w: %s=invalid", op, ErrConflict, field)
 	}
@@ -46,34 +47,34 @@ func ReplayOrder(order Order, history []Execution) (*OrderProjection, error) {
 		if _, exists := seen[e.ID]; exists || keys[string(e.RecordKey)] {
 			return conflict("record")
 		}
-		var root, ref Execution
-		if e.SubmissionRecordID != nil {
+		var root, ref Event
+		if e.SubmissionEventID != nil {
 			var exists bool
-			root, exists = seen[*e.SubmissionRecordID]
-			if !exists || root.ExecType != ExecutionTypeSubmissionAccepted || root.ExecutionSystem != e.ExecutionSystem || !sameString(root.ExecutionID, e.ExecutionID) {
-				return conflict("submission_record_id")
+			root, exists = seen[*e.SubmissionEventID]
+			if !exists || root.EventType != EventTypeSubmissionAccepted || root.ExecutionRecordID != e.ExecutionRecordID || root.ExecutionSystem != e.ExecutionSystem || !sameString(root.ExecutionID, e.ExecutionID) {
+				return conflict("submission_event_id")
 			}
 		}
-		if e.ReferenceRecordID != nil {
+		if e.ReferenceEventID != nil {
 			var exists bool
-			ref, exists = seen[*e.ReferenceRecordID]
+			ref, exists = seen[*e.ReferenceEventID]
 			if !exists || ref.ExecutionSystem != e.ExecutionSystem {
-				return conflict("reference_record_id")
+				return conflict("reference_event_id")
 			}
-			if e.SubmissionRecordID != nil {
-				refRoot := ref.SubmissionRecordID
-				if ref.ExecType == ExecutionTypeSubmissionAccepted {
+			if e.SubmissionEventID != nil {
+				refRoot := ref.SubmissionEventID
+				if ref.EventType == EventTypeSubmissionAccepted {
 					refRoot = &ref.ID
 				}
-				if !sameUint(e.SubmissionRecordID, refRoot) || !sameString(ref.ExecutionID, e.ExecutionID) {
-					return conflict("reference_record_id")
+				if !sameUint(e.SubmissionEventID, refRoot) || !sameString(ref.ExecutionID, e.ExecutionID) {
+					return conflict("reference_event_id")
 				}
 			}
-			if (e.ExecType == ExecutionTypeFillCorrected || e.ExecType == ExecutionTypeFillReversed || e.ExecType == ExecutionTypeReversed) && ref.SourceVersion != nil && e.SourceVersion != nil && *e.SourceVersion <= *ref.SourceVersion {
+			if (e.EventType == EventTypeFillCorrected || e.EventType == EventTypeFillReversed || e.EventType == EventTypeReversed) && ref.SourceVersion != nil && e.SourceVersion != nil && *e.SourceVersion <= *ref.SourceVersion {
 				return conflict("source_version")
 			}
 		}
-		add := func(fill Execution) {
+		add := func(fill Event) {
 			v, _ := new(big.Rat).SetString(*fill.OrderQuantity)
 			total.Add(total, v)
 			active[fill.ID] = fill
@@ -81,73 +82,74 @@ func ReplayOrder(order Order, history []Execution) (*OrderProjection, error) {
 				scale = len(*fill.OrderQuantity) - p - 1
 			}
 		}
-		remove := func(fill Execution) {
+		remove := func(fill Event) {
 			v, _ := new(big.Rat).SetString(*fill.OrderQuantity)
 			total.Sub(total, v)
 			delete(active, fill.ID)
 		}
-		switch e.ExecType {
-		case ExecutionTypeSubmissionAccepted:
+		switch e.EventType {
+		case EventTypeSubmissionAccepted:
 			key := e.ExecutionSystem + "\x00" + *e.ExecutionID
-			if publicIDs[key] {
+			if publicIDs[key] || executionIDs[e.ExecutionRecordID] {
 				return conflict("execution_id")
 			}
 			publicIDs[key] = true
-		case ExecutionTypeSubmitted:
+			executionIDs[e.ExecutionRecordID] = true
+		case EventTypeSubmitted:
 			if submitted[root.ID] {
 				return conflict("submitted")
 			}
 			submitted[root.ID] = true
-		case ExecutionTypeSucceeded, ExecutionTypeFailed, ExecutionTypeSubmissionRejected:
+		case EventTypeSucceeded, EventTypeFailed, EventTypeSubmissionRejected:
 			if results[root.ID] != 0 {
 				return conflict("result")
 			}
-			if e.ExecType != ExecutionTypeSucceeded {
+			if e.EventType != EventTypeSucceeded {
 				for _, f := range active {
-					if *f.SubmissionRecordID == root.ID {
+					if *f.SubmissionEventID == root.ID {
 						return conflict("result")
 					}
 				}
 			}
 			results[root.ID] = e.ID
 			reversed[root.ID] = false
-		case ExecutionTypeReversed:
-			if !isResult(ref.ExecType) || results[root.ID] != ref.ID {
-				return conflict("reference_record_id")
+		case EventTypeReversed:
+			if !isResult(ref.EventType) || results[root.ID] != ref.ID {
+				return conflict("reference_event_id")
 			}
 			delete(results, root.ID)
 			reversed[root.ID] = true
 			for _, f := range active {
-				if *f.SubmissionRecordID == root.ID {
+				if *f.SubmissionEventID == root.ID {
 					remove(f)
 				}
 			}
-		case ExecutionTypeFilled, ExecutionTypeFillCorrected:
+		case EventTypeFilled, EventTypeFillCorrected:
 			if reversed[root.ID] {
 				return conflict("result")
 			}
-			if resultID := results[root.ID]; resultID != 0 && seen[resultID].ExecType != ExecutionTypeSucceeded {
+			if resultID := results[root.ID]; resultID != 0 && seen[resultID].EventType != EventTypeSucceeded {
 				return conflict("result")
 			}
-			if e.ExecType == ExecutionTypeFillCorrected {
+			if e.EventType == EventTypeFillCorrected {
 				original, ok := active[ref.ID]
 				if !ok || !sameString(original.QuantityAssetID, e.QuantityAssetID) || !sameString(original.CounterAssetID, e.CounterAssetID) || *original.QuantityDecimals != *e.QuantityDecimals || *original.CounterDecimals != *e.CounterDecimals {
-					return conflict("reference_record_id")
+					return conflict("reference_event_id")
 				}
 				remove(original)
 			}
 			add(e)
-		case ExecutionTypeFillReversed:
+		case EventTypeFillReversed:
 			original, ok := active[ref.ID]
 			if !ok {
-				return conflict("reference_record_id")
+				return conflict("reference_event_id")
 			}
 			remove(original)
-		case ExecutionTypeFeesRecorded, ExecutionTypeFeesAdjusted:
-			if !isFill(ref.ExecType) && !isResult(ref.ExecType) {
-				return conflict("reference_record_id")
+		case EventTypeFeesRecorded, EventTypeFeesAdjusted:
+			if !isFill(ref.EventType) && !isResult(ref.EventType) {
+				return conflict("reference_event_id")
 			}
-		case ExecutionTypeOrderCanceled, ExecutionTypeOrderExpired, ExecutionTypeOrderRejected, ExecutionTypeOrderFailed:
+		case EventTypeOrderCanceled, EventTypeOrderExpired, EventTypeOrderRejected, EventTypeOrderFailed:
 			if terminal != nil {
 				return conflict("order_termination")
 			}
@@ -162,7 +164,7 @@ func ReplayOrder(order Order, history []Execution) (*OrderProjection, error) {
 		}
 		var terminalTime = e.OccurredAt
 		if terminal != nil {
-			next = map[ExecutionType]OrderStatus{ExecutionTypeOrderCanceled: OrderStatusCanceled, ExecutionTypeOrderExpired: OrderStatusExpired, ExecutionTypeOrderRejected: OrderStatusRejected, ExecutionTypeOrderFailed: OrderStatusFailed}[terminal.ExecType]
+			next = map[EventType]OrderStatus{EventTypeOrderCanceled: OrderStatusCanceled, EventTypeOrderExpired: OrderStatusExpired, EventTypeOrderRejected: OrderStatusRejected, EventTypeOrderFailed: OrderStatusFailed}[terminal.EventType]
 			terminalTime = terminal.OccurredAt
 		}
 		if order.Quantity != nil {
@@ -179,7 +181,7 @@ func ReplayOrder(order Order, history []Execution) (*OrderProjection, error) {
 			state.CompletedAt = &v
 		}
 		state.Status = next
-		state.LastExecutionSequence = e.Sequence
+		state.LastEventSequence = e.Sequence
 	}
 	state.FilledQuantity = strings.TrimRight(strings.TrimRight(total.FloatString(scale), "0"), ".")
 	// Only strip fractional zeros; integer zeros are significant.

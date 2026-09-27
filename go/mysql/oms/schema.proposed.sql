@@ -1,4 +1,4 @@
--- OMS snapshot and append-only history, 2026-09-26. Breaking fresh-DB schema.
+-- OMS order/execution snapshots and append-only onchain events, 2026-09-26. Breaking fresh-DB schema.
 -- Quote, Prepare and approval are not persisted. Submit starts the history.
 -- MySQL 8.4 / InnoDB; timestamps are UTC; decimal values are canonical strings.
 -- The subsequent Store/operation changes must precede deployment to this schema.
@@ -24,7 +24,7 @@ CREATE TABLE oms_orders (
     stop_loss_value VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL,
     specification_version SMALLINT UNSIGNED NOT NULL COMMENT 'Order specification format version',
     specification JSON NOT NULL COMMENT 'Original order conditions and asset units; no credentials or prepared quote',
-    last_execution_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Last history sequence applied to this snapshot',
+    last_event_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Last history sequence applied to this snapshot',
     idempotency_key VARBINARY(128) NOT NULL COMMENT 'Account-scoped order creation key',
     expires_at DATETIME(6) NULL COMMENT 'Order expiry time',
     completed_at DATETIME(6) NULL COMMENT 'Time of transition to a terminal state',
@@ -51,12 +51,40 @@ CREATE TABLE oms_orders (
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
 CREATE TABLE oms_order_executions (
+    id BIGINT UNSIGNED NOT NULL COMMENT 'Stable execution snapshot ID',
+    order_id BIGINT UNSIGNED NOT NULL,
+    execution_system VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    execution_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Public execution identifier',
+    event_family VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Adapter owning the event history, currently onchain',
+    venue VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
+    quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Allocated quantity in order units; null when unspecified',
+    filled_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '0' COMMENT 'Sum of effective fill contributions in order units, not intermediate leg quantities',
+    fees_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    last_event_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Last order-local event sequence applied to this execution',
+    completed_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_oms_execution_id_order (id, order_id),
+    UNIQUE KEY uq_oms_execution_external (execution_system, execution_id),
+    KEY idx_oms_execution_order (order_id, id),
+    KEY idx_oms_execution_pending (event_family, status, id),
+    CONSTRAINT fk_oms_execution_order FOREIGN KEY (order_id) REFERENCES oms_orders(id) ON DELETE RESTRICT,
+    CONSTRAINT ck_oms_execution_status CHECK (status IN ('pending', 'partially_filled', 'filled', 'succeeded', 'failed', 'rejected')),
+    CONSTRAINT ck_oms_execution_required CHECK (CHAR_LENGTH(execution_system) > 0 AND CHAR_LENGTH(execution_id) > 0 AND CHAR_LENGTH(event_family) > 0 AND CHAR_LENGTH(venue) > 0 AND CHAR_LENGTH(filled_quantity) > 0),
+    CONSTRAINT ck_oms_execution_fees CHECK (fees_complete IN (0, 1))
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+
+CREATE TABLE oms_order_execution_onchain_events (
     id BIGINT UNSIGNED NOT NULL COMMENT 'Execution record ID',
     order_id BIGINT UNSIGNED NOT NULL COMMENT 'Order ID',
+    execution_record_id BIGINT UNSIGNED NOT NULL COMMENT 'Owning execution snapshot',
+    requested_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Accepted allocation in order units; only on submission_accepted',
     sequence BIGINT UNSIGNED NOT NULL COMMENT 'Order-local append sequence allocated under the order lock',
-    exec_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Immutable fact type, not mutable progress status',
-    submission_record_id BIGINT UNSIGNED NULL COMMENT 'Submission acceptance record; null on the acceptance itself or order-wide facts',
-    reference_record_id BIGINT UNSIGNED NULL COMMENT 'Prior record corrected, reversed or otherwise referenced',
+    event_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Immutable fact type, not mutable progress status',
+    submission_event_id BIGINT UNSIGNED NULL COMMENT 'Submission acceptance record; null only on acceptance',
+    reference_event_id BIGINT UNSIGNED NULL COMMENT 'Prior record corrected, reversed or otherwise referenced',
     record_key VARBINARY(128) NOT NULL COMMENT 'Stable record key within the order',
     execution_system VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Execution system identifier',
     execution_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Public submission ID shared by acceptance, result and fills',
@@ -73,61 +101,6 @@ CREATE TABLE oms_order_executions (
     source_version BIGINT UNSIGNED NULL COMMENT 'Source-provided record revision when available',
     occurred_at DATETIME(6) NOT NULL COMMENT 'Occurrence time of this record',
     recorded_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_oms_exec_id_order (id, order_id),
-    UNIQUE KEY uq_oms_exec_id_order_type (id, order_id, exec_type),
-    UNIQUE KEY uq_oms_exec_sequence (order_id, sequence),
-    UNIQUE KEY uq_oms_exec_record (order_id, record_key),
-    UNIQUE KEY uq_oms_exec_submission (execution_system, (CASE WHEN exec_type = 'submission_accepted' THEN execution_id ELSE NULL END)),
-    KEY idx_oms_exec_external (execution_system, execution_id, sequence),
-    KEY idx_oms_exec_submission_type (submission_record_id, exec_type, id),
-    KEY idx_oms_exec_type_recorded (exec_type, recorded_at, id),
-    CONSTRAINT fk_oms_exec_order FOREIGN KEY (order_id) REFERENCES oms_orders(id) ON DELETE RESTRICT,
-    CONSTRAINT fk_oms_exec_submission FOREIGN KEY (submission_record_id, order_id) REFERENCES oms_order_executions(id, order_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_oms_exec_reference FOREIGN KEY (reference_record_id, order_id) REFERENCES oms_order_executions(id, order_id) ON DELETE RESTRICT,
-    CONSTRAINT ck_oms_exec_sequence CHECK (sequence > 0),
-    CONSTRAINT ck_oms_exec_type CHECK (exec_type IN (
-        'submission_accepted', 'submitted', 'submission_rejected',
-        'execution_succeeded', 'execution_failed', 'execution_reversed',
-        'filled', 'fill_reversed', 'fill_corrected',
-        'fees_recorded', 'fees_adjusted', 'evidence_recorded',
-        'order_canceled', 'order_expired', 'order_rejected', 'order_failed'
-    )),
-    CONSTRAINT ck_oms_exec_required CHECK (OCTET_LENGTH(record_key) > 0 AND CHAR_LENGTH(execution_system) > 0),
-    CONSTRAINT ck_oms_exec_submission_shape CHECK (
-        (exec_type = 'submission_accepted' AND submission_record_id IS NULL
-            AND execution_id IS NOT NULL AND CHAR_LENGTH(execution_id) > 0
-            AND venue IS NOT NULL AND CHAR_LENGTH(venue) > 0)
-        OR (exec_type IN ('order_canceled', 'order_expired', 'order_rejected', 'order_failed')
-            AND submission_record_id IS NULL AND execution_id IS NULL)
-        OR (exec_type NOT IN ('submission_accepted', 'order_canceled', 'order_expired', 'order_rejected', 'order_failed')
-            AND submission_record_id IS NOT NULL AND execution_id IS NOT NULL AND CHAR_LENGTH(execution_id) > 0)
-    ),
-    CONSTRAINT ck_oms_exec_reference CHECK (
-        (submission_record_id IS NULL OR submission_record_id <> id)
-        AND (reference_record_id IS NULL OR reference_record_id <> id)
-        AND (exec_type NOT IN ('execution_reversed', 'fill_reversed', 'fill_corrected', 'fees_recorded', 'fees_adjusted', 'evidence_recorded') OR reference_record_id IS NOT NULL)
-    ),
-    CONSTRAINT ck_oms_exec_fill CHECK (
-        (exec_type IN ('filled', 'fill_corrected')
-            AND quantity IS NOT NULL AND counter_quantity IS NOT NULL AND order_quantity IS NOT NULL
-            AND quantity_asset_id IS NOT NULL AND counter_asset_id IS NOT NULL
-            AND quantity_decimals IS NOT NULL AND counter_decimals IS NOT NULL
-            AND CHAR_LENGTH(quantity) > 0 AND CHAR_LENGTH(counter_quantity) > 0 AND CHAR_LENGTH(order_quantity) > 0
-            AND CHAR_LENGTH(quantity_asset_id) > 0 AND CHAR_LENGTH(counter_asset_id) > 0
-            AND quantity_decimals <= 255 AND counter_decimals <= 255)
-        OR (exec_type NOT IN ('filled', 'fill_corrected')
-            AND quantity IS NULL AND counter_quantity IS NULL AND order_quantity IS NULL
-            AND quantity_asset_id IS NULL AND counter_asset_id IS NULL
-            AND quantity_decimals IS NULL AND counter_decimals IS NULL AND price IS NULL)
-    ),
-    CONSTRAINT ck_oms_exec_fees_complete CHECK (fees_complete IS NULL OR fees_complete IN (0, 1))
-) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
-
-CREATE TABLE oms_order_execution_onchain_details (
-    execution_record_id BIGINT UNSIGNED NOT NULL,
-    order_id BIGINT UNSIGNED NOT NULL,
-    exec_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Parent fact discriminator, enforced by composite FK',
     chain_family VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     chain VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     network VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -147,12 +120,59 @@ CREATE TABLE oms_order_execution_onchain_details (
     finality_level VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
     protocol_version SMALLINT UNSIGNED NOT NULL,
     protocol_data JSON NULL COMMENT 'Versioned typed protocol evidence; no credentials or private keys',
-    PRIMARY KEY (execution_record_id),
-    UNIQUE KEY uq_oms_onchain_submission (chain, network, (CASE WHEN exec_type = 'submission_accepted' THEN tx_id ELSE NULL END)),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_oms_event_id_order (id, order_id),
+    UNIQUE KEY uq_oms_event_parent (id, order_id, execution_record_id),
+    UNIQUE KEY uq_oms_event_sequence (order_id, sequence),
+    UNIQUE KEY uq_oms_event_record (order_id, record_key),
+    UNIQUE KEY uq_oms_event_submission (execution_system, (CASE WHEN event_type = 'submission_accepted' THEN execution_id ELSE NULL END)),
+    KEY idx_oms_event_external (execution_system, execution_id, sequence),
+    KEY idx_oms_event_submission_type (submission_event_id, event_type, id),
+    KEY idx_oms_event_type_recorded (event_type, recorded_at, id),
+    KEY idx_oms_event_execution (execution_record_id, sequence),
+    CONSTRAINT fk_oms_event_execution FOREIGN KEY (execution_record_id, order_id) REFERENCES oms_order_executions(id, order_id) ON DELETE RESTRICT,
+    UNIQUE KEY uq_oms_onchain_submission (chain, network, (CASE WHEN event_type = 'submission_accepted' THEN tx_id ELSE NULL END)),
     KEY idx_oms_onchain_tx (chain, network, tx_id),
     KEY idx_oms_onchain_ledger (chain, network, ledger_unit, ledger_sequence),
-    CONSTRAINT fk_oms_onchain_execution FOREIGN KEY (execution_record_id, order_id, exec_type)
-        REFERENCES oms_order_executions(id, order_id, exec_type) ON DELETE RESTRICT,
+    CONSTRAINT fk_oms_event_order FOREIGN KEY (order_id) REFERENCES oms_orders(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_oms_event_submission FOREIGN KEY (submission_event_id, order_id, execution_record_id) REFERENCES oms_order_execution_onchain_events(id, order_id, execution_record_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_oms_event_reference FOREIGN KEY (reference_event_id, order_id, execution_record_id) REFERENCES oms_order_execution_onchain_events(id, order_id, execution_record_id) ON DELETE RESTRICT,
+    CONSTRAINT ck_oms_event_sequence CHECK (sequence > 0),
+    CONSTRAINT ck_oms_event_type CHECK (event_type IN (
+        'submission_accepted', 'submitted', 'submission_rejected',
+        'execution_succeeded', 'execution_failed', 'execution_reversed',
+        'filled', 'fill_reversed', 'fill_corrected',
+        'fees_recorded', 'fees_adjusted', 'evidence_recorded',
+        'order_canceled', 'order_expired', 'order_rejected', 'order_failed'
+    )),
+    CONSTRAINT ck_oms_event_required CHECK (OCTET_LENGTH(record_key) > 0 AND CHAR_LENGTH(execution_system) > 0),
+    CONSTRAINT ck_oms_event_submission_shape CHECK (
+        (event_type = 'submission_accepted' AND submission_event_id IS NULL
+            AND execution_id IS NOT NULL AND CHAR_LENGTH(execution_id) > 0
+            AND venue IS NOT NULL AND CHAR_LENGTH(venue) > 0)
+        OR (event_type <> 'submission_accepted'
+            AND submission_event_id IS NOT NULL AND execution_id IS NOT NULL AND CHAR_LENGTH(execution_id) > 0)
+    ),
+    CONSTRAINT ck_oms_event_reference CHECK (
+        (submission_event_id IS NULL OR submission_event_id <> id)
+        AND (reference_event_id IS NULL OR reference_event_id <> id)
+        AND (event_type NOT IN ('execution_reversed', 'fill_reversed', 'fill_corrected', 'fees_recorded', 'fees_adjusted', 'evidence_recorded') OR reference_event_id IS NOT NULL)
+    ),
+    CONSTRAINT ck_oms_event_fill CHECK (
+        (event_type IN ('filled', 'fill_corrected')
+            AND quantity IS NOT NULL AND counter_quantity IS NOT NULL AND order_quantity IS NOT NULL
+            AND quantity_asset_id IS NOT NULL AND counter_asset_id IS NOT NULL
+            AND quantity_decimals IS NOT NULL AND counter_decimals IS NOT NULL
+            AND CHAR_LENGTH(quantity) > 0 AND CHAR_LENGTH(counter_quantity) > 0 AND CHAR_LENGTH(order_quantity) > 0
+            AND CHAR_LENGTH(quantity_asset_id) > 0 AND CHAR_LENGTH(counter_asset_id) > 0
+            AND quantity_decimals <= 255 AND counter_decimals <= 255)
+        OR (event_type NOT IN ('filled', 'fill_corrected')
+            AND quantity IS NULL AND counter_quantity IS NULL AND order_quantity IS NULL
+            AND quantity_asset_id IS NULL AND counter_asset_id IS NULL
+            AND quantity_decimals IS NULL AND counter_decimals IS NULL AND price IS NULL)
+    ),
+    CONSTRAINT ck_oms_event_fees_complete CHECK (fees_complete IS NULL OR fees_complete IN (0, 1)),
+    CONSTRAINT ck_oms_event_request CHECK (requested_quantity IS NULL OR (event_type = 'submission_accepted' AND CHAR_LENGTH(requested_quantity) > 0)),
     CONSTRAINT ck_oms_onchain_required CHECK (
         chain_family IN ('evm', 'solana', 'sui') AND CHAR_LENGTH(chain) > 0
         AND CHAR_LENGTH(network) > 0 AND CHAR_LENGTH(tx_id) > 0 AND protocol_version > 0
@@ -167,28 +187,29 @@ CREATE TABLE oms_order_execution_onchain_details (
             AND (finality_level IS NULL OR finality_level IN ('observed', 'confirmed', 'finalized')))
     ),
     CONSTRAINT ck_oms_onchain_acceptance CHECK (
-        (exec_type = 'submission_accepted' AND ledger_unit IS NULL AND event_position IS NULL
+        (event_type = 'submission_accepted' AND ledger_unit IS NULL AND event_position IS NULL
             AND signer_id IS NOT NULL AND CHAR_LENGTH(signer_id) > 0
             AND payload_digest IS NOT NULL AND CHAR_LENGTH(payload_digest) > 0
             AND payload_encoding IS NOT NULL AND CHAR_LENGTH(payload_encoding) > 0
             AND tx_payload IS NOT NULL AND OCTET_LENGTH(tx_payload) > 0)
-        OR (exec_type <> 'submission_accepted' AND signer_id IS NULL AND recipient_id IS NULL
+        OR (event_type <> 'submission_accepted' AND signer_id IS NULL AND recipient_id IS NULL
             AND payload_digest IS NULL AND payload_encoding IS NULL AND tx_payload IS NULL)
     ),
     CONSTRAINT ck_oms_onchain_result CHECK (
-        exec_type NOT IN ('execution_succeeded', 'execution_failed', 'filled', 'fill_corrected')
+        event_type NOT IN ('execution_succeeded', 'execution_failed', 'filled', 'fill_corrected')
         OR (ledger_unit IS NOT NULL AND finality_level IS NOT NULL)
     ),
     CONSTRAINT ck_oms_onchain_event CHECK (
-        (exec_type IN ('filled', 'fill_corrected') AND event_position IS NOT NULL AND CHAR_LENGTH(event_position) > 0)
-        OR (exec_type NOT IN ('filled', 'fill_corrected') AND event_position IS NULL)
+        (event_type IN ('filled', 'fill_corrected') AND event_position IS NOT NULL AND CHAR_LENGTH(event_position) > 0)
+        OR (event_type NOT IN ('filled', 'fill_corrected') AND event_position IS NULL)
     )
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
 CREATE TABLE oms_order_execution_fees (
     id BIGINT UNSIGNED NOT NULL,
     order_id BIGINT UNSIGNED NOT NULL,
-    execution_record_id BIGINT UNSIGNED NOT NULL COMMENT 'Result, fill or later fee fact owning this component',
+    execution_record_id BIGINT UNSIGNED NOT NULL COMMENT 'Owning execution snapshot',
+    event_id BIGINT UNSIGNED NOT NULL COMMENT 'Source event in the execution event_family table, validated by Store',
     adjustment_of_fee_id BIGINT UNSIGNED NULL COMMENT 'Original fee adjusted by this signed delta',
     record_key VARBINARY(128) NOT NULL,
     fee_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -204,13 +225,14 @@ CREATE TABLE oms_order_execution_fees (
     occurred_at DATETIME(6) NOT NULL,
     recorded_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     PRIMARY KEY (id),
-    UNIQUE KEY uq_oms_fee_id_order (id, order_id),
+    UNIQUE KEY uq_oms_fee_id_order (id, order_id, execution_record_id),
     UNIQUE KEY uq_oms_fee_record (order_id, record_key),
+    KEY idx_oms_fee_event (event_id, execution_record_id),
     KEY idx_oms_fee_execution (execution_record_id, order_id),
     CONSTRAINT fk_oms_fee_execution FOREIGN KEY (execution_record_id, order_id)
         REFERENCES oms_order_executions(id, order_id) ON DELETE RESTRICT,
-    CONSTRAINT fk_oms_fee_adjustment FOREIGN KEY (adjustment_of_fee_id, order_id)
-        REFERENCES oms_order_execution_fees(id, order_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_oms_fee_adjustment FOREIGN KEY (adjustment_of_fee_id, order_id, execution_record_id)
+        REFERENCES oms_order_execution_fees(id, order_id, execution_record_id) ON DELETE RESTRICT,
     CONSTRAINT ck_oms_fee_adjustment CHECK (adjustment_of_fee_id IS NULL OR adjustment_of_fee_id <> id),
     CONSTRAINT ck_oms_fee_treatment CHECK (accounting_treatment IN ('additional', 'included_in_input', 'included_in_output', 'unknown')),
     CONSTRAINT ck_oms_fee_asset CHECK (
