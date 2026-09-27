@@ -58,3 +58,15 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_sync_cursors (
     PRIMARY KEY (id),
     UNIQUE KEY uk_amm_pool_source (chain_family, chain, network, venue, source_key)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_activity_minutes (
+    pool_id BINARY(32) NOT NULL,
+    minute_started_at DATETIME(6) NOT NULL,
+    totals JSON NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (pool_id, minute_started_at),
+    KEY idx_amm_pool_activity_minute_retention (minute_started_at),
+    FOREIGN KEY (pool_id)
+        REFERENCES onchain_amm_pool_new_pair_snapshots(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;

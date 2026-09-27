@@ -31,11 +31,12 @@ func NewStore(db *sql.DB) (*Store, error) {
 }
 
 // NewStoreWithTablePrefix composes a repository with validated application table names.
-// The prefix is applied to all three tables; an empty prefix preserves default names.
+// The prefix is applied to all tables; an empty prefix preserves default names.
 //
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
+//   - 2026-09-27: Include atomic activity minute persistence.
 func NewStoreWithTablePrefix(db *sql.DB, prefix string) (*Store, error) {
 	if db == nil {
 		return nil, fmt.Errorf("failed to create amm pool store: database=null")
@@ -43,7 +44,7 @@ func NewStoreWithTablePrefix(db *sql.DB, prefix string) (*Store, error) {
 	if prefix != "" && !regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`).MatchString(prefix) {
 		return nil, fmt.Errorf("failed to create amm pool store: table_prefix=invalid")
 	}
-	names := []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors"}
+	names := []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes"}
 	replacements := make([]string, 0, len(names)*2)
 	for _, name := range names {
 		if len(prefix)+len(name) > 64 {
@@ -62,6 +63,7 @@ func (s *Store) query(query string) string { return s.tableNames.Replace(query) 
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
+//   - 2026-09-27: Include atomic activity minute persistence.
 func (s *Store) Schema() string { return s.query(schema) }
 
 // Schema returns the version-one DDL for application migrations.
@@ -70,6 +72,7 @@ func (s *Store) Schema() string { return s.query(schema) }
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
+//   - 2026-09-27: Include atomic activity minute persistence.
 func Schema() string { return schema }
 
 // CreateTables applies initial DDL when explicitly called by a migration runner.
@@ -78,6 +81,7 @@ func Schema() string { return schema }
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
+//   - 2026-09-27: Include atomic activity minute persistence.
 func (s *Store) CreateTables(ctx context.Context) error {
 	for _, statement := range strings.Split(schema, ";") {
 		if strings.TrimSpace(statement) == "" {
@@ -120,6 +124,7 @@ func (s *Store) Cursor(ctx context.Context, source Source) (Cursor, error) {
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-18: Save snapshots before events to satisfy snapshot ownership constraints.
 //   - 2026-09-19: Use observed swap fields and creation-based retention.
+//   - 2026-09-27: Include atomic activity minute persistence.
 func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 	if err = b.Validate(); err != nil {
 		return fmt.Errorf("failed to commit amm pool batch: %w", err)
@@ -172,6 +177,9 @@ func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to save amm pool event: %w", err)
 		}
+	}
+	if err := s.commitActivity(ctx, tx, b); err != nil {
+		return err
 	}
 	_, err = tx.ExecContext(ctx, s.query("UPDATE onchain_amm_pool_new_pair_sync_cursors SET position=?,revision=revision+1,updated_at=? WHERE id=?"), []byte(c.Position), c.UpdatedAt.UTC(), sourceID[:])
 	if err != nil {

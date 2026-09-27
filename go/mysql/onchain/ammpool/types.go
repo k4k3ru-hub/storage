@@ -70,9 +70,11 @@ type Cursor struct {
 }
 
 type Batch struct {
-	Cursor    Cursor
-	Snapshots []Snapshot
-	Events    []Event
+	Cursor          Cursor
+	Snapshots       []Snapshot
+	Events          []Event
+	ActivityMinutes []ActivityMinute
+	ResetActivity   []Identity
 }
 
 // ID returns the case-sensitive, length-delimited pool identity digest.
@@ -147,6 +149,7 @@ func (s Source) Validate() error {
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Validate NewPair verification state.
 //   - 2026-09-19: Validate observed swaps and paired liquidity evaluation values.
+//   - 2026-09-27: Validate atomic minute updates and creation resets.
 func (b Batch) Validate() error {
 	if err := b.Cursor.Source.Validate(); err != nil {
 		return fmt.Errorf("failed to validate amm pool batch: %w", err)
@@ -182,7 +185,7 @@ func (b Batch) Validate() error {
 			return fmt.Errorf("failed to validate amm pool batch: event=invalid")
 		}
 	}
-	return nil
+	return b.validateActivity()
 }
 func sameScope(i Identity, s Source) bool {
 	return i.ChainFamily == s.ChainFamily && i.Chain == s.Chain && i.Network == s.Network && i.Venue == s.Venue

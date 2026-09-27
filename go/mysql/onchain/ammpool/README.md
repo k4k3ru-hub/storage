@@ -83,3 +83,27 @@ go test -mod=mod -modfile=/tmp/ammpool-test.mod -tags=mysqlintegration -run Test
 
 Validated on 2026-09-19: normal module tests/vet and the opt-in integration test
 passed against local Docker MySQL. Application tables were not modified.
+
+## Minute activity snapshots (2026-09-27)
+
+`onchain_amm_pool_new_pair_activity_minutes` stores sparse minute snapshots under
+`(pool_id, minute_started_at)`. `pool_id` references the parent snapshot's digest,
+not its public Pool address. Amounts and counts inside `totals` remain decimal
+strings; callers own the payload schema. No empty minutes are preallocated.
+
+Supply changed `Batch.ActivityMinutes` together with their parent snapshots.
+`Commit` replaces these minute totals in the same transaction as lifetime totals,
+event deduplication evidence and the source cursor. A retry cannot add the same
+contribution twice. `Batch.ResetActivity` clears a Pool's previous creation
+generation before writing replacement minutes. Each batch accepts at most 1,441
+minute rows and each totals payload is bounded to 16 KiB.
+
+`ActivityMinutes` reads one Pool's `[from,to)` interval. `WalkActivityMinutes`
+streams a source's retained rows in one query; the source key must match the
+parent projection's `source` string. `PruneActivityMinutes` bounds retention
+independently of the parent's monitoring lifetime. Parent deletion also cascades
+to minute rows. Apply the additional DDL before enabling these readers.
+
+The optional `TestMySQLActivityAtomicity` integration test covers exact large
+counts, cursor conflict, rollback after a parent write, correction replacement,
+source isolation, creation reset and cascade deletion.

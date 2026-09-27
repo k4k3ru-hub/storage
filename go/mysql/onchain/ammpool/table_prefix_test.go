@@ -11,6 +11,7 @@ import (
 // Version:
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Verify NewPair-specific table names.
+//   - 2026-09-27: Include the activity minute table.
 func TestTablePrefix(t *testing.T) {
 	db := new(sql.DB)
 	prefixed, err := NewStoreWithTablePrefix(db, "market_hub_")
@@ -21,7 +22,7 @@ func TestTablePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors"} {
+	for _, name := range []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes"} {
 		if !strings.Contains(prefixed.Schema(), "`market_hub_"+name+"`") {
 			t.Fatal("configured DDL omitted table", name)
 		}
