@@ -163,6 +163,7 @@ func needsReference(t EventType) bool {
 // Protocol-specific specification validation belongs to the submitting adapter.
 //
 // Version:
+//   - 2026-09-27: Validate immutable counter units and cumulative counter amounts.
 //   - 2026-09-26: Validate the new snapshot schema.
 func (o Order) Validate() error {
 	if o.ID == 0 || o.AccountID == 0 {
@@ -210,12 +211,26 @@ func (o Order) Validate() error {
 	if o.SpecificationVersion == 0 {
 		return invalid("specification_version", "empty")
 	}
-	return jsonObject("specification", o.Specification, true)
+	if err := jsonObject("specification", o.Specification, true); err != nil {
+		return err
+	}
+	asset, err := o.CounterQuantityAsset()
+	if err != nil {
+		return err
+	}
+	if o.FilledCounterQuantity != nil {
+		if asset == nil {
+			return invalid("counter_quantity_asset", "null")
+		}
+		return unitDecimal("filled_counter_quantity", *o.FilledCounterQuantity, asset.Decimals, false)
+	}
+	return nil
 }
 
 // Validate validates snapshot values without inferring completion from a receipt.
 //
 // Version:
+//   - 2026-09-27: Validate nullable counter totals.
 //   - 2026-09-26: Remove processing and include the history sequence.
 func (s OrderState) Validate() error {
 	switch s.Status {
@@ -229,6 +244,11 @@ func (s OrderState) Validate() error {
 	if err := decimal("filled_quantity", s.FilledQuantity, true); err != nil {
 		return err
 	}
+	if s.FilledCounterQuantity != nil {
+		if err := decimal("filled_counter_quantity", *s.FilledCounterQuantity, true); err != nil {
+			return err
+		}
+	}
 	if s.CompletedAt != nil {
 		return validTime("completed_at", *s.CompletedAt)
 	}
@@ -238,6 +258,7 @@ func (s OrderState) Validate() error {
 // Validate validates one immutable event; references are checked during replay.
 //
 // Version:
+//   - 2026-09-27: Validate counter contributions only on fill facts.
 //   - 2026-09-26: Validate immutable events owned by an execution snapshot.
 func (e Event) Validate() error {
 	if e.RequestedQuantity != nil {
@@ -303,6 +324,11 @@ func (e Event) Validate() error {
 		if err := decimal("order_quantity", *e.OrderQuantity, true); err != nil {
 			return err
 		}
+		if e.OrderCounterQuantity != nil {
+			if err := decimal("order_counter_quantity", *e.OrderCounterQuantity, true); err != nil {
+				return err
+			}
+		}
 		if err := optionalDecimal("price", e.Price); err != nil {
 			return err
 		}
@@ -312,7 +338,7 @@ func (e Event) Validate() error {
 		if err := textValue("counter_asset_id", *e.CounterAssetID, 65535, true); err != nil {
 			return err
 		}
-	} else if e.Quantity != nil || e.CounterQuantity != nil || e.OrderQuantity != nil || e.QuantityAssetID != nil || e.CounterAssetID != nil || e.QuantityDecimals != nil || e.CounterDecimals != nil || e.Price != nil {
+	} else if e.Quantity != nil || e.CounterQuantity != nil || e.OrderQuantity != nil || e.OrderCounterQuantity != nil || e.QuantityAssetID != nil || e.CounterAssetID != nil || e.QuantityDecimals != nil || e.CounterDecimals != nil || e.Price != nil {
 		return invalid("fill", "invalid")
 	}
 	return nil

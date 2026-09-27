@@ -17,6 +17,7 @@ CREATE TABLE oms_orders (
     status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending' COMMENT 'Current order snapshot status',
     quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Order quantity; null until determined',
     filled_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '0' COMMENT 'Cumulative filled quantity in the order quantity unit',
+    filled_counter_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL COMMENT 'Cumulative counter quantity in the order counter asset; null when unavailable',
     limit_price VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL,
     take_profit_type VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
     take_profit_value VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL,
@@ -60,6 +61,7 @@ CREATE TABLE oms_order_executions (
     status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
     quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Allocated quantity in order units; null when unspecified',
     filled_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '0' COMMENT 'Sum of effective fill contributions in order units, not intermediate leg quantities',
+    filled_counter_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL COMMENT 'Cumulative counter quantity in the order counter asset; null when unavailable',
     fees_complete BOOLEAN NOT NULL DEFAULT FALSE,
     last_event_sequence BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Last order-local event sequence applied to this execution',
     completed_at DATETIME(6) NULL,
@@ -96,6 +98,7 @@ CREATE TABLE oms_order_execution_onchain_events (
     quantity_decimals SMALLINT UNSIGNED NULL,
     counter_decimals SMALLINT UNSIGNED NULL,
     order_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Fill contribution in order quantity units; zero for intermediate legs',
+    order_counter_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL COMMENT 'Fill contribution in order counter asset units; null when unavailable',
     price VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Optional fill price in counter asset per quantity asset',
     fees_complete BOOLEAN NULL COMMENT 'Fee investigation completed; null means this fact makes no assertion',
     source_version BIGINT UNSIGNED NULL COMMENT 'Source-provided record revision when available',
@@ -167,7 +170,7 @@ CREATE TABLE oms_order_execution_onchain_events (
             AND CHAR_LENGTH(quantity_asset_id) > 0 AND CHAR_LENGTH(counter_asset_id) > 0
             AND quantity_decimals <= 255 AND counter_decimals <= 255)
         OR (event_type NOT IN ('filled', 'fill_corrected')
-            AND quantity IS NULL AND counter_quantity IS NULL AND order_quantity IS NULL
+            AND quantity IS NULL AND counter_quantity IS NULL AND order_quantity IS NULL AND order_counter_quantity IS NULL
             AND quantity_asset_id IS NULL AND counter_asset_id IS NULL
             AND quantity_decimals IS NULL AND counter_decimals IS NULL AND price IS NULL)
     ),

@@ -10,6 +10,7 @@ import (
 // ID zero requests generation. Commit it with the first accepted submission; roll back on any error.
 //
 // Version:
+//   - 2026-09-27: Initialize supported counter totals from immutable units.
 //   - 2026-09-26: Replace AMM-specific creation with generic order creation.
 func (s *Store) InsertOrder(ctx context.Context, tx *sql.Tx, order Order) (uint64, error) {
 	const op = "failed to insert oms order"
@@ -25,6 +26,17 @@ func (s *Store) InsertOrder(ctx context.Context, tx *sql.Tx, order Order) (uint6
 	if order.FilledQuantity == "" {
 		order.FilledQuantity = "0"
 	}
+	asset, err := order.CounterQuantityAsset()
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
+	}
+	if asset != nil && order.FilledCounterQuantity == nil {
+		zero := "0"
+		order.FilledCounterQuantity = &zero
+	}
+	if order.FilledCounterQuantity != nil && *order.FilledCounterQuantity != "0" {
+		return 0, fmt.Errorf("%s: %w", op, invalid("initial_counter_quantity", "invalid"))
+	}
 	if order.Status != OrderStatusPending || order.FilledQuantity != "0" || order.CompletedAt != nil || order.LastEventSequence != 0 {
 		return 0, fmt.Errorf("%s: %w", op, invalid("initial_state", "invalid"))
 	}
@@ -39,7 +51,7 @@ func (s *Store) InsertOrder(ctx context.Context, tx *sql.Tx, order Order) (uint6
 			return 0, fmt.Errorf("%s: %w", op, err)
 		}
 	}
-	_, err := tx.ExecContext(ctx, insertSQL(s.orderTable, orderColumns), orderArgs(order)...)
+	_, err = tx.ExecContext(ctx, insertSQL(s.orderTable, orderColumns), orderArgs(order)...)
 	if err != nil {
 		return 0, writeError(op, err)
 	}

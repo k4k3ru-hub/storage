@@ -136,7 +136,7 @@ func sameTime(a, b *time.Time) bool {
 }
 func sameUint(a, b *uint64) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
 func orderStateEqual(a, b OrderState) bool {
-	return a.LastEventSequence == b.LastEventSequence && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameTime(a.CompletedAt, b.CompletedAt)
+	return a.LastEventSequence == b.LastEventSequence && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameString(a.FilledCounterQuantity, b.FilledCounterQuantity) && sameTime(a.CompletedAt, b.CompletedAt)
 }
 func identity(accountID, orderID uint64) error {
 	if accountID == 0 || orderID == 0 {

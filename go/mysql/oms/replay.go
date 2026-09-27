@@ -7,8 +7,9 @@ import (
 )
 
 type OrderProjection struct {
-	State       OrderState
-	ActiveFills []Event
+	State        OrderState
+	ActiveFills  []Event
+	counterAsset *QuantityAsset
 }
 
 // ReplayOrder rebuilds the snapshot and effective fills from the complete sequence-ordered history.
@@ -16,10 +17,15 @@ type OrderProjection struct {
 // Missing quantity leaves a nonzero fill partially filled. Order termination requires an order fact.
 //
 // Version:
+//   - 2026-09-27: Rebuild counter totals from effective contributions.
 //   - 2026-09-26: Added.
 func ReplayOrder(order Order, history []Event) (*OrderProjection, error) {
 	const op = "failed to replay oms order"
 	if err := order.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	asset, err := order.CounterQuantityAsset()
+	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	state := OrderState{Status: OrderStatusPending, Quantity: order.Quantity, FilledQuantity: "0"}
@@ -39,6 +45,9 @@ func ReplayOrder(order Order, history []Event) (*OrderProjection, error) {
 	}
 	for i, e := range history {
 		if err := e.Validate(); err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		if err := validateCounterContribution(asset, e); err != nil {
 			return nil, fmt.Errorf("%s: %w", op, err)
 		}
 		if e.OrderID != order.ID || e.Sequence != uint64(i)+1 {
@@ -194,11 +203,15 @@ func ReplayOrder(order Order, history []Event) (*OrderProjection, error) {
 	if err := state.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	projection := &OrderProjection{State: state}
+	projection := &OrderProjection{State: state, counterAsset: asset}
 	for _, e := range history {
 		if _, ok := active[e.ID]; ok {
 			projection.ActiveFills = append(projection.ActiveFills, e)
 		}
+	}
+	projection.State.FilledCounterQuantity, err = sumCounter(asset, projection.ActiveFills, 0)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return projection, nil
 }

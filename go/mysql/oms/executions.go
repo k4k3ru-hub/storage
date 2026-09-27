@@ -15,12 +15,23 @@ import (
 // No RPC or network operation may be performed while holding this transaction.
 //
 // Version:
+//   - 2026-09-27: Persist both counter snapshots and validate the asset scope.
 //   - 2026-09-26: Update execution and order snapshots atomically with onchain events.
 func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID uint64, record OnchainEvent) (*AppendResult, error) {
 	const op = "failed to append oms onchain event"
 	order, err := s.SelectOrderForUpdate(ctx, tx, accountID, record.Event.OrderID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	asset, err := order.CounterQuantityAsset()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if record.Event.OrderCounterQuantity != nil && asset != nil && asset.Namespace == "onchain" {
+		d := record.Onchain
+		if d == nil || asset.Chain != d.Chain || asset.Network != d.Network {
+			return nil, fmt.Errorf("%s: %w: counter_asset_scope=mismatch", op, ErrConflict)
+		}
 	}
 	history, err := s.loadHistory(ctx, tx, order.ID)
 	if err != nil {
@@ -125,7 +136,7 @@ func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID ui
 			return nil, writeError(op, err)
 		}
 	} else {
-		if _, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.executionTable)+" SET status=?,filled_quantity=?,fees_complete=?,last_event_sequence=?,completed_at=?,updated_at=? WHERE id=? AND order_id=?", snapshot.Status, snapshot.FilledQuantity, snapshot.FeesComplete, snapshot.LastEventSequence, snapshot.CompletedAt, snapshot.UpdatedAt, snapshot.ID, order.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.executionTable)+" SET status=?,filled_quantity=?,filled_counter_quantity=?,fees_complete=?,last_event_sequence=?,completed_at=?,updated_at=? WHERE id=? AND order_id=?", snapshot.Status, snapshot.FilledQuantity, snapshot.FilledCounterQuantity, snapshot.FeesComplete, snapshot.LastEventSequence, snapshot.CompletedAt, snapshot.UpdatedAt, snapshot.ID, order.ID); err != nil {
 			return nil, writeError(op, err)
 		}
 	}
@@ -137,7 +148,7 @@ func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID ui
 			return nil, writeError(op, err)
 		}
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.orderTable)+" SET status=?,filled_quantity=?,completed_at=?,last_event_sequence=? WHERE account_id=? AND id=?", next.State.Status, next.State.FilledQuantity, optionalTime(next.State.CompletedAt), next.State.LastEventSequence, accountID, order.ID)
+	_, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.orderTable)+" SET status=?,filled_quantity=?,filled_counter_quantity=?,completed_at=?,last_event_sequence=? WHERE account_id=? AND id=?", next.State.Status, next.State.FilledQuantity, next.State.FilledCounterQuantity, optionalTime(next.State.CompletedAt), next.State.LastEventSequence, accountID, order.ID)
 	if err != nil {
 		return nil, writeError(op, err)
 	}

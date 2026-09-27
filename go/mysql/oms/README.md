@@ -26,6 +26,15 @@ executionの`quantity`は受付時の割当数量で、注文と同じ単位。
 Atomicの途中legは`order_quantity=0`にし、異なる資産の数量を足さない。
 各legの実数量・資産・decimalsはeventの`quantity` / `counter_quantity`等に保存する。
 
+注文とexecutionの`filled_counter_quantity`は、有効約定の`order_counter_quantity`の合計。
+不変の注文`specification.counterQuantityAsset`（namespace、chain/network、assetId、symbol、decimals）
+を共通の集計単位とする。StoreはSwapのkindやlegを解釈しない。
+metadataがある注文は未約定・全件取消時に`"0"`、有効約定に不明な寄与があればNULL。
+metadataがない／nullの注文は受付時からNULLで、Atomicもこの扱いとする。
+訂正は旧寄与を置換し、取消は対象寄与を除く。費用は合算・控除しない。
+単純Swapのexact-inputは受取量、exact-outputは支払量をTradeHubが寄与として渡す。
+小数は文字列のまま正確に集計し、両snapshotと履歴を同じtransactionで更新する。
+
 executionの状態はpending、partially_filled、filled、succeeded、failed、rejected。
 受付・送信だけならpending。結果成功だけでは約定を推測せずsucceeded、
 有効な寄与が正ならpartially_filled、割当数量を満たせばfilled。

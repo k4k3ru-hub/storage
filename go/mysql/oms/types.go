@@ -52,11 +52,12 @@ var (
 )
 
 type OrderState struct {
-	Status            OrderStatus
-	Quantity          *string
-	FilledQuantity    string
-	CompletedAt       *time.Time
-	LastEventSequence uint64
+	Status                OrderStatus
+	Quantity              *string
+	FilledQuantity        string
+	FilledCounterQuantity *string
+	CompletedAt           *time.Time
+	LastEventSequence     uint64
 }
 type Order struct {
 	ID, AccountID                                           uint64
@@ -89,6 +90,7 @@ type Execution struct {
 	Status                                           ExecutionStatus
 	Quantity                                         *string
 	FilledQuantity                                   string
+	FilledCounterQuantity                            *string
 	FeesComplete                                     bool
 	LastEventSequence                                uint64
 	CompletedAt                                      *time.Time
@@ -107,7 +109,7 @@ type Event struct {
 	ExecutionID, Venue                                         *string
 	Quantity, CounterQuantity, QuantityAssetID, CounterAssetID *string
 	QuantityDecimals, CounterDecimals                          *uint16
-	OrderQuantity, Price                                       *string
+	OrderQuantity, OrderCounterQuantity, Price                 *string
 	FeesComplete                                               *bool
 	SourceVersion                                              *uint64
 	OccurredAt, RecordedAt                                     time.Time
