@@ -163,6 +163,7 @@ func needsReference(t EventType) bool {
 // Protocol-specific specification validation belongs to the submitting adapter.
 //
 // Version:
+//   - 2026-09-28: Accept nullable representative order IDs, including root self-reference.
 //   - 2026-09-27: Validate immutable counter units and cumulative counter amounts.
 //   - 2026-09-26: Validate the new snapshot schema.
 func (o Order) Validate() error {
@@ -171,6 +172,9 @@ func (o Order) Validate() error {
 	}
 	if o.ParentOrderID != nil && (*o.ParentOrderID == 0 || *o.ParentOrderID == o.ID) {
 		return invalid("parent_order_id", "invalid")
+	}
+	if o.PositionOrderID != nil && *o.PositionOrderID == 0 {
+		return invalid("position_order_id", "empty")
 	}
 	for _, f := range []struct {
 		name, value string
@@ -348,6 +352,7 @@ func (e Event) Validate() error {
 // Chain identity, signature and finality policy must be checked by the adapter.
 //
 // Version:
+//   - 2026-09-28: Validate optional typed external order identifiers.
 //   - 2026-09-26: Added.
 func (d OnchainEvidence) Validate() error {
 	if d.EventID == 0 || d.OrderID == 0 {
@@ -381,6 +386,9 @@ func (d OnchainEvidence) Validate() error {
 	}
 	if err := jsonObject("protocol_data", d.ProtocolData, false); err != nil {
 		return err
+	}
+	if _, err := d.ExecutionIdentifiers(); err != nil {
+		return fmt.Errorf("failed to validate oms onchain evidence: %w", err)
 	}
 	if d.LedgerUnit == nil {
 		if d.LedgerSequence != nil || d.LedgerID != nil || d.TxPosition != nil || d.FinalityLevel != nil {

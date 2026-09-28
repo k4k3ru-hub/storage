@@ -2,17 +2,17 @@ package oms
 
 import "strings"
 
-const orderColumns = "id,account_id,parent_order_id,account_ref,asset_class,domain,venue,symbol,side,order_type,status,quantity,filled_quantity,filled_counter_quantity,limit_price,take_profit_type,take_profit_value,stop_loss_type,stop_loss_value,specification_version,specification,last_event_sequence,idempotency_key,expires_at,completed_at,created_at,updated_at"
+const orderColumns = "id,account_id,parent_order_id,position_order_id,account_ref,asset_class,domain,venue,symbol,side,order_type,status,quantity,filled_quantity,filled_counter_quantity,limit_price,take_profit_type,take_profit_value,stop_loss_type,stop_loss_value,specification_version,specification,last_event_sequence,idempotency_key,expires_at,completed_at,created_at,updated_at"
 
 func scanOrder(row scanner) (*Order, error) {
 	var v Order
-	if err := row.Scan(&v.ID, &v.AccountID, &v.ParentOrderID, &v.AccountRef, &v.AssetClass, &v.Domain, &v.Venue, &v.Symbol, &v.Side, &v.OrderType, &v.Status, &v.Quantity, &v.FilledQuantity, &v.FilledCounterQuantity, &v.LimitPrice, &v.TakeProfitType, &v.TakeProfitValue, &v.StopLossType, &v.StopLossValue, &v.SpecificationVersion, &v.Specification, &v.LastEventSequence, &v.IdempotencyKey, &v.ExpiresAt, &v.CompletedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+	if err := row.Scan(&v.ID, &v.AccountID, &v.ParentOrderID, &v.PositionOrderID, &v.AccountRef, &v.AssetClass, &v.Domain, &v.Venue, &v.Symbol, &v.Side, &v.OrderType, &v.Status, &v.Quantity, &v.FilledQuantity, &v.FilledCounterQuantity, &v.LimitPrice, &v.TakeProfitType, &v.TakeProfitValue, &v.StopLossType, &v.StopLossValue, &v.SpecificationVersion, &v.Specification, &v.LastEventSequence, &v.IdempotencyKey, &v.ExpiresAt, &v.CompletedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &v, nil
 }
 func orderArgs(v Order) []any {
-	return []any{v.ID, v.AccountID, v.ParentOrderID, v.AccountRef, v.AssetClass, v.Domain, v.Venue, v.Symbol, v.Side, v.OrderType, v.Status, v.Quantity, v.FilledQuantity, v.FilledCounterQuantity, v.LimitPrice, v.TakeProfitType, v.TakeProfitValue, v.StopLossType, v.StopLossValue, v.SpecificationVersion, v.Specification, v.LastEventSequence, v.IdempotencyKey, v.ExpiresAt, v.CompletedAt, v.CreatedAt, v.UpdatedAt}
+	return []any{v.ID, v.AccountID, v.ParentOrderID, v.PositionOrderID, v.AccountRef, v.AssetClass, v.Domain, v.Venue, v.Symbol, v.Side, v.OrderType, v.Status, v.Quantity, v.FilledQuantity, v.FilledCounterQuantity, v.LimitPrice, v.TakeProfitType, v.TakeProfitValue, v.StopLossType, v.StopLossValue, v.SpecificationVersion, v.Specification, v.LastEventSequence, v.IdempotencyKey, v.ExpiresAt, v.CompletedAt, v.CreatedAt, v.UpdatedAt}
 }
 
 const eventColumns = "id,order_id,execution_record_id,requested_quantity,sequence,event_type,submission_event_id,reference_event_id,record_key,execution_system,execution_id,venue,quantity,counter_quantity,quantity_asset_id,counter_asset_id,quantity_decimals,counter_decimals,order_quantity,order_counter_quantity,price,fees_complete,source_version,occurred_at,recorded_at"
@@ -58,17 +58,17 @@ func insertSQL(table, columns string) string {
 	return "INSERT INTO " + quoted(table) + " (" + columns + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?,", strings.Count(columns, ",")+1), ",") + ")"
 }
 
-const executionColumns = "id,order_id,execution_system,execution_id,event_family,venue,status,quantity,filled_quantity,filled_counter_quantity,fees_complete,last_event_sequence,completed_at,created_at,updated_at"
+const executionColumns = "id,order_id,execution_system,execution_id,event_family,venue,venue_order_id,client_order_id,status,quantity,filled_quantity,filled_counter_quantity,fees_complete,last_event_sequence,completed_at,created_at,updated_at"
 
 func scanExecution(row scanner) (*Execution, error) {
 	var e Execution
-	if err := row.Scan(&e.ID, &e.OrderID, &e.ExecutionSystem, &e.ExecutionID, &e.EventFamily, &e.Venue, &e.Status, &e.Quantity, &e.FilledQuantity, &e.FilledCounterQuantity, &e.FeesComplete, &e.LastEventSequence, &e.CompletedAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
+	if err := row.Scan(&e.ID, &e.OrderID, &e.ExecutionSystem, &e.ExecutionID, &e.EventFamily, &e.Venue, &e.VenueOrderID, &e.ClientOrderID, &e.Status, &e.Quantity, &e.FilledQuantity, &e.FilledCounterQuantity, &e.FeesComplete, &e.LastEventSequence, &e.CompletedAt, &e.CreatedAt, &e.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &e, nil
 }
 func executionArgs(e Execution) []any {
-	return []any{e.ID, e.OrderID, e.ExecutionSystem, e.ExecutionID, e.EventFamily, e.Venue, e.Status, e.Quantity, e.FilledQuantity, e.FilledCounterQuantity, e.FeesComplete, e.LastEventSequence, e.CompletedAt, e.CreatedAt, e.UpdatedAt}
+	return []any{e.ID, e.OrderID, e.ExecutionSystem, e.ExecutionID, e.EventFamily, e.Venue, e.VenueOrderID, e.ClientOrderID, e.Status, e.Quantity, e.FilledQuantity, e.FilledCounterQuantity, e.FeesComplete, e.LastEventSequence, e.CompletedAt, e.CreatedAt, e.UpdatedAt}
 }
 
 var onchainEventColumns = eventColumns + "," + strings.Join(strings.Split(onchainEvidenceColumns, ",")[3:], ",")

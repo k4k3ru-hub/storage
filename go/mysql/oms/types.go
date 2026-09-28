@@ -62,6 +62,7 @@ type OrderState struct {
 type Order struct {
 	ID, AccountID                                           uint64
 	ParentOrderID                                           *uint64
+	PositionOrderID                                         *uint64
 	AccountRef, AssetClass, Domain, Symbol, Side, OrderType string
 	Venue                                                   *string
 	OrderState
@@ -87,6 +88,7 @@ const (
 type Execution struct {
 	ID, OrderID                                      uint64
 	ExecutionSystem, ExecutionID, EventFamily, Venue string
+	VenueOrderID, ClientOrderID                      *string
 	Status                                           ExecutionStatus
 	Quantity                                         *string
 	FilledQuantity                                   string

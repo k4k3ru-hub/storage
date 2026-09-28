@@ -15,6 +15,7 @@ import (
 // No RPC or network operation may be performed while holding this transaction.
 //
 // Version:
+//   - 2026-09-28: Project immutable external order identifiers from event evidence.
 //   - 2026-09-27: Persist both counter snapshots and validate the asset scope.
 //   - 2026-09-26: Update execution and order snapshots atomically with onchain events.
 func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID uint64, record OnchainEvent) (*AppendResult, error) {
@@ -136,7 +137,7 @@ func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID ui
 			return nil, writeError(op, err)
 		}
 	} else {
-		if _, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.executionTable)+" SET status=?,filled_quantity=?,filled_counter_quantity=?,fees_complete=?,last_event_sequence=?,completed_at=?,updated_at=? WHERE id=? AND order_id=?", snapshot.Status, snapshot.FilledQuantity, snapshot.FilledCounterQuantity, snapshot.FeesComplete, snapshot.LastEventSequence, snapshot.CompletedAt, snapshot.UpdatedAt, snapshot.ID, order.ID); err != nil {
+		if _, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.executionTable)+" SET venue_order_id=?,client_order_id=?,status=?,filled_quantity=?,filled_counter_quantity=?,fees_complete=?,last_event_sequence=?,completed_at=?,updated_at=? WHERE id=? AND order_id=?", snapshot.VenueOrderID, snapshot.ClientOrderID, snapshot.Status, snapshot.FilledQuantity, snapshot.FilledCounterQuantity, snapshot.FeesComplete, snapshot.LastEventSequence, snapshot.CompletedAt, snapshot.UpdatedAt, snapshot.ID, order.ID); err != nil {
 			return nil, writeError(op, err)
 		}
 	}

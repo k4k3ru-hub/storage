@@ -25,6 +25,9 @@ func projectExecution(id uint64, history []OnchainEvent, projection *OrderProjec
 		if snapshot == nil {
 			return nil, fmt.Errorf("failed to project oms execution: %w: acceptance=null", ErrConflict)
 		}
+		if err := projectExecutionIdentifiers(snapshot, r); err != nil {
+			return nil, fmt.Errorf("failed to project oms execution: %w", err)
+		}
 		snapshot.LastEventSequence = e.Sequence
 		snapshot.UpdatedAt = e.RecordedAt
 		switch e.EventType {
@@ -164,5 +167,5 @@ func (s *Store) loadSnapshots(ctx context.Context, tx *sql.Tx, orderID uint64) (
 	return readRows(rows, scanExecution)
 }
 func executionEqual(a, b Execution) bool {
-	return a.ID == b.ID && a.OrderID == b.OrderID && a.ExecutionSystem == b.ExecutionSystem && a.ExecutionID == b.ExecutionID && a.EventFamily == b.EventFamily && a.Venue == b.Venue && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameString(a.FilledCounterQuantity, b.FilledCounterQuantity) && a.FeesComplete == b.FeesComplete && a.LastEventSequence == b.LastEventSequence && sameTime(a.CompletedAt, b.CompletedAt) && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
+	return a.ID == b.ID && a.OrderID == b.OrderID && a.ExecutionSystem == b.ExecutionSystem && a.ExecutionID == b.ExecutionID && a.EventFamily == b.EventFamily && a.Venue == b.Venue && sameString(a.VenueOrderID, b.VenueOrderID) && sameString(a.ClientOrderID, b.ClientOrderID) && a.Status == b.Status && sameString(a.Quantity, b.Quantity) && a.FilledQuantity == b.FilledQuantity && sameString(a.FilledCounterQuantity, b.FilledCounterQuantity) && a.FeesComplete == b.FeesComplete && a.LastEventSequence == b.LastEventSequence && sameTime(a.CompletedAt, b.CompletedAt) && a.CreatedAt.Equal(b.CreatedAt) && a.UpdatedAt.Equal(b.UpdatedAt)
 }

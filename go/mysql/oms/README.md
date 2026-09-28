@@ -1,6 +1,7 @@
 # OMS — 注文・execution snapshotと方式別events
 
-2026-09-27。従来の「executions自体を履歴とする」構造を変更した破壊的更新。
+2026-09-28。注文グループ参照と外部注文IDの保存を追加。
+2026-09-27の「executions自体を履歴とする」構造からの変更は破壊的更新。
 `schema.proposed.sql`はTradeHub migration 001のOMS部分と一致する。
 
 | テーブル | 役割 |
@@ -18,6 +19,49 @@ Quote・Prepare・approveは保存しない。署名済みSwapのSubmit受付か
 共通executionはasset_class固有のTx・資産ペア・個別約定量を持たない。
 FX向けの`oms_order_execution_forex_events`は命名方針のみ採用し、DDL／adapterは未実装。
 FXの具体的な受付・部分約定・取消仕様を決めた時点で追加する。
+
+## 注文グループと外部注文ID
+
+`Order.PositionOrderID`は自社OMSの代表Open注文ID。初回Openは事前採番した自身のIDを設定し、
+追加・部分Close・全Closeは同じ代表IDを参照する。NULLも有効で、AMMの注文を強制的にグループ化しない。
+`ParentOrderID`とは独立し、既存の親注文検証を維持する。所属を変更する更新メソッドは提供しない。
+
+同一accountの代表注文だけを参照でき、StoreはAccountRef・AssetClass・Domain・Symbolの一致も確認する。
+Symbolだけで商品が一致したとは判断できないため、chain／network・正確な資産・数量単位・商品・方向・
+保管先の検証と、Close可能な残数量・予約の確認は注文を作成するoperation／adapterの責務。
+CloseはOpenと反対のSideになり得るため、Sideの文字列一致を所属条件にはしない。
+グループ残数量・原価・PnLの投影は、このStore変更には含まない。注文の累計約定数量は残数量とは別。
+
+`Execution.VenueOrderID`と`ClientOrderID`はnullableで、`ExecutionID`を置き換えない。
+最大255文字のASCII識別子を大小文字を区別して保持し、空文字は拒否する。
+検索indexは非一意。Venue・環境・実行口座等の範囲をadapterで確認し、外部ID単独で照合しない。
+
+外部IDの原本は既存`OnchainEvidence.ProtocolData`内の型付き領域に保持する。新たなevent列は追加しない。
+`WithExecutionIdentifiers`は他のprotocol情報と数値精度を保ったコピーを作り、入力を変更しない。
+
+```go
+evidence, err := evidence.WithExecutionIdentifiers(oms.ExecutionIdentifiers{
+    ClientOrderID: &clientOrderID,
+})
+if err != nil {
+    return fmt.Errorf("failed to prepare submission evidence: %w", err)
+}
+record.Onchain = &evidence
+// Append record as submission_accepted in the order creation transaction.
+```
+
+保存形式は`{"executionIdentifiers":{"version":1,"clientOrderId":"...","venueOrderId":"..."}}`。
+各IDは未指定可だが、領域を設定する場合は少なくとも一方が必要。
+`ExecutionIdentifiers()`で検証済みの値を読み取れる。adapter固有のID形式も送信前に検証する。
+
+- client IDは初回`submission_accepted`に保存する。後から初めて設定することや、値の変更は拒否する。
+- venue IDは判明した時点の受付応答・照会根拠を持つeventへ保存する。後続の別IDへの変更は拒否する。
+- 同じIDの再観測は受け入れ、未指定のeventで既知IDを消さない。訂正・reversalでも実行識別は維持する。
+- 既存`AppendOnchainEvent`で原本とsnapshotを同一transactionで保存し、再生時にも両IDを比較する。
+  snapshotだけをSQL更新して原本と不一致になった場合は、次回の追記を`ErrConflict`にする。
+
+これは対応event familyの保存基盤であり、Hyperliquid／FX送信adapterの追加ではない。
+それらをOnchain履歴へ架空のTxとして保存せず、各adapterのevent familyへ接続する。
 
 ## Snapshotと履歴
 
@@ -80,6 +124,7 @@ ID=0は自動採番、Sequence=0は採番を要求する。子の親IDは省略�
 | 読取り | メソッド |
 | --- | --- |
 | 注文snapshot | `SelectOrder` / `SelectOrderForUpdate` / `SelectOrderByIdempotencyKey` |
+| 代表Openと関連注文 | `ListPositionOrders`（ID降順、before cursor、上限200） |
 | execution snapshot | `SelectExecution` / `ListExecutions` |
 | 注文内のonchain履歴 | `ListEvents` / `SelectEventByKey` |
 | eventのonchain根拠 | `SelectOnchainEvidence` |
@@ -164,10 +209,13 @@ DB時刻はUTC、DSNはparseTime=true&loc=UTCを使う。実チェーンへの�
 
 検証は複数execution・部分失敗・明示終了、訂正／reversal、Atomicの中間leg、遅着／複数通貨費用、
 同時追記・古いread snapshot・重複・所有者分離・rollback・snapshot改変検出・3チェーンの位置情報を含む。
+注文グループの自己参照・別account拒否・NULL保持・ページング、外部IDの原本再生・rollback・再送・変更拒否も検証する。
 
 現在は親ロック下で注文の全eventsとfeesを読み直す。長大な履歴への性能最適化は未実施。
 通常APIでevents／feesのUPDATE・DELETEは提供しないが、DB管理者操作を防ぐトリガーは追加しない。
 
 新001は新規DB用。既存の001適用済みDBを自動変換しない。
+2026-09-28より前のDBは、このStoreへ更新する前に3列と対応制約・indexの追加が必要。
+既存行の新列はNULLとし、`parent_order_id`や`execution_id`から自動推測しない。
 ローカルのTradeHubはgo.workでこのモジュールを参照する。公開依存versionの更新にはstorageの公開が必要。
 TradeHub local composeのビルドは追加contextからこのStoreを取り込む。

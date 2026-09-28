@@ -7,6 +7,7 @@ CREATE TABLE oms_orders (
     id BIGINT UNSIGNED NOT NULL COMMENT 'Order ID',
     account_id BIGINT UNSIGNED NOT NULL COMMENT 'K4K3RU account ID',
     parent_order_id BIGINT UNSIGNED NULL COMMENT 'Parent order ID',
+    position_order_id BIGINT UNSIGNED NULL COMMENT 'Representative OMS open order ID; nullable for spot inventory accounting',
     account_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Execution account or wallet reference',
     asset_class VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Asset class',
     domain VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Order domain',
@@ -35,10 +36,13 @@ CREATE TABLE oms_orders (
     UNIQUE KEY uq_oms_order_id_account (id, account_id),
     UNIQUE KEY uq_oms_orders_account_idempotency (account_id, idempotency_key),
     KEY idx_oms_orders_parent (parent_order_id),
+    KEY idx_oms_orders_position (position_order_id, account_id, id),
     KEY idx_oms_orders_account_status_created (account_id, status, created_at, id),
     KEY idx_oms_orders_account_venue_symbol (account_id, venue, symbol, id),
     KEY idx_oms_orders_status_expires (status, expires_at, id),
     CONSTRAINT fk_oms_order_parent FOREIGN KEY (parent_order_id, account_id) REFERENCES oms_orders(id, account_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_oms_order_position FOREIGN KEY (position_order_id, account_id) REFERENCES oms_orders(id, account_id) ON DELETE RESTRICT,
+    CONSTRAINT ck_oms_order_position CHECK (position_order_id IS NULL OR position_order_id > 0),
     CONSTRAINT ck_oms_order_status CHECK (status IN ('pending', 'partially_filled', 'filled', 'canceled', 'expired', 'failed', 'rejected')),
     CONSTRAINT ck_oms_order_specification CHECK (specification_version > 0 AND JSON_TYPE(specification) = 'OBJECT'),
     CONSTRAINT ck_oms_orders_take_profit CHECK (
@@ -58,6 +62,8 @@ CREATE TABLE oms_order_executions (
     execution_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Public execution identifier',
     event_family VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Adapter owning the event history, currently onchain',
     venue VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    venue_order_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Venue-assigned order ID; scoped by venue, environment and execution account',
+    client_order_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Client-assigned order ID persisted before sending when supported',
     status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'pending',
     quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Allocated quantity in order units; null when unspecified',
     filled_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '0' COMMENT 'Sum of effective fill contributions in order units, not intermediate leg quantities',
@@ -71,11 +77,15 @@ CREATE TABLE oms_order_executions (
     UNIQUE KEY uq_oms_execution_id_order (id, order_id),
     UNIQUE KEY uq_oms_execution_external (execution_system, execution_id),
     KEY idx_oms_execution_order (order_id, id),
+    KEY idx_oms_execution_venue_order (venue, venue_order_id, order_id),
+    KEY idx_oms_execution_client_order (venue, client_order_id, order_id),
     KEY idx_oms_execution_pending (event_family, status, id),
     CONSTRAINT fk_oms_execution_order FOREIGN KEY (order_id) REFERENCES oms_orders(id) ON DELETE RESTRICT,
     CONSTRAINT ck_oms_execution_status CHECK (status IN ('pending', 'partially_filled', 'filled', 'succeeded', 'failed', 'rejected')),
     CONSTRAINT ck_oms_execution_required CHECK (CHAR_LENGTH(execution_system) > 0 AND CHAR_LENGTH(execution_id) > 0 AND CHAR_LENGTH(event_family) > 0 AND CHAR_LENGTH(venue) > 0 AND CHAR_LENGTH(filled_quantity) > 0),
-    CONSTRAINT ck_oms_execution_fees CHECK (fees_complete IN (0, 1))
+    CONSTRAINT ck_oms_execution_fees CHECK (fees_complete IN (0, 1)),
+    CONSTRAINT ck_oms_execution_venue_order CHECK (venue_order_id IS NULL OR CHAR_LENGTH(venue_order_id) > 0),
+    CONSTRAINT ck_oms_execution_client_order CHECK (client_order_id IS NULL OR CHAR_LENGTH(client_order_id) > 0)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
 
 CREATE TABLE oms_order_execution_onchain_events (

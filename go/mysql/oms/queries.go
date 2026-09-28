@@ -41,6 +41,40 @@ func (s *Store) ListOrders(ctx context.Context, q api.Executor, accountID, befor
 	return values, nil
 }
 
+// ListPositionOrders lists an owned representative order and its related orders by descending ID.
+// A zero cursor starts with the newest ID. Membership does not imply a remaining position.
+//
+// Version:
+//   - 2026-09-28: Added.
+func (s *Store) ListPositionOrders(ctx context.Context, q api.Executor, accountID, positionOrderID, beforeID uint64, limit int) ([]Order, error) {
+	const op = "failed to list oms position orders"
+	if limit < 1 || limit > 200 {
+		return nil, fmt.Errorf("%s: %w", op, invalid("limit", "out_of_range"))
+	}
+	root, err := s.SelectOrder(ctx, q, accountID, positionOrderID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if root.PositionOrderID == nil || *root.PositionOrderID != root.ID {
+		return nil, fmt.Errorf("%s: %w: position_order_id=invalid", op, ErrConflict)
+	}
+	query := "SELECT " + orderColumns + " FROM " + quoted(s.orderTable) + " WHERE account_id=? AND position_order_id=?"
+	args := []any{accountID, positionOrderID}
+	if beforeID != 0 {
+		query += " AND id<?"
+		args = append(args, beforeID)
+	}
+	rows, err := q.QueryContext(ctx, query+" ORDER BY id DESC LIMIT ?", append(args, limit)...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	values, err := readRows(rows, scanOrder)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	return values, nil
+}
+
 // ListOnchainEvents lists owned events after an exclusive order-local sequence.
 // Recovery payloads and opaque protocol data are omitted from this read model.
 // Use a transaction for consistency with order and execution snapshots.
