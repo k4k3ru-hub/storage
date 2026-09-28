@@ -15,6 +15,7 @@ import (
 // No RPC or network operation may be performed while holding this transaction.
 //
 // Version:
+//   - 2026-09-28: Version and invalidate composed PnL checkpoints in the source transaction.
 //   - 2026-09-28: Project immutable external order identifiers from event evidence.
 //   - 2026-09-27: Persist both counter snapshots and validate the asset scope.
 //   - 2026-09-26: Update execution and order snapshots atomically with onchain events.
@@ -152,6 +153,9 @@ func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID ui
 	_, err = tx.ExecContext(ctx, "UPDATE "+quoted(s.orderTable)+" SET status=?,filled_quantity=?,filled_counter_quantity=?,completed_at=?,last_event_sequence=? WHERE account_id=? AND id=?", next.State.Status, next.State.FilledQuantity, next.State.FilledCounterQuantity, optionalTime(next.State.CompletedAt), next.State.LastEventSequence, accountID, order.ID)
 	if err != nil {
 		return nil, writeError(op, err)
+	}
+	if err := s.touchPnL(ctx, tx, *order); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return &AppendResult{EventID: normalized.Event.ID, ExecutionRecordID: normalized.Event.ExecutionRecordID, Execution: *snapshot, Sequence: normalized.Event.Sequence, State: next.State}, nil
 }

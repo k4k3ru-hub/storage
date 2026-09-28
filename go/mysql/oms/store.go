@@ -22,16 +22,18 @@ const (
 	DefaultOnchainEventTableName = "oms_order_execution_onchain_events"
 	DefaultFeeTableName          = "oms_order_execution_fees"
 	DefaultExecutionTableName    = "oms_order_executions"
+	DefaultPnLTableName          = "oms_pnl"
 )
 
 //go:embed schema.proposed.sql
 var reviewedSchema string
 
-type Store struct{ orderTable, executionTable, onchainEventTable, feeTable string }
+type Store struct{ orderTable, executionTable, onchainEventTable, feeTable, pnlTable string }
 
 // NewStore composes an OMS store with explicit table names and no database ownership.
 //
 // Version:
+//   - 2026-09-28: Preserve four-table composition; opt into PnL with NewStoreWithPnL.
 //   - 2026-09-26: Separate execution snapshots and onchain event history.
 func NewStore(orderTable, executionTable, onchainEventTable, feeTable string) (*Store, error) {
 	names := []string{orderTable, executionTable, onchainEventTable, feeTable}
@@ -48,7 +50,28 @@ func NewStore(orderTable, executionTable, onchainEventTable, feeTable string) (*
 		}
 		seen[strings.ToLower(name)] = true
 	}
-	return &Store{orderTable, executionTable, onchainEventTable, feeTable}, nil
+	return &Store{orderTable: orderTable, executionTable: executionTable, onchainEventTable: onchainEventTable, feeTable: feeTable}, nil
+}
+
+// NewStoreWithPnL composes an OMS store with a PnL checkpoint table and atomic source invalidation.
+// All writers to these OMS tables must use this composition before publishing checkpoints.
+//
+// Version:
+//   - 2026-09-28: Added.
+func NewStoreWithPnL(orderTable, executionTable, onchainEventTable, feeTable, pnlTable string) (*Store, error) {
+	s, err := NewStore(orderTable, executionTable, onchainEventTable, feeTable)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create oms pnl store: %w", err)
+	}
+	// Reuse the identifier, length and duplicate-name validation of the existing constructor.
+	if _, err := NewStore(pnlTable, orderTable, executionTable, onchainEventTable); err != nil {
+		return nil, fmt.Errorf("failed to create oms pnl store: %w", err)
+	}
+	if strings.EqualFold(pnlTable, feeTable) {
+		return nil, fmt.Errorf("failed to create oms pnl store: %w", invalid("pnl_table", "invalid"))
+	}
+	s.pnlTable = pnlTable
+	return s, nil
 }
 
 // NewDefaultStore composes a store using the reviewed OMS table names.
@@ -63,17 +86,22 @@ func NewDefaultStore() (*Store, error) {
 // MySQL DDL is not transactional; invoke this only from explicit migration code.
 //
 // Version:
+//   - 2026-09-28: Include PnL only when explicitly composed with NewStoreWithPnL.
 //   - 2026-09-26: Separate execution snapshots and onchain event history.
 func (s *Store) CreateTables(ctx context.Context, executor api.Executor) error {
 	if err := s.guard(ctx, executor); err != nil {
 		return fmt.Errorf("failed to create oms tables: %w", err)
 	}
-	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainEventTableName: s.onchainEventTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable}
+	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainEventTableName: s.onchainEventTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable, DefaultPnLTableName: s.pnlTable}
+	definition := reviewedSchema
+	if s.pnlTable == "" {
+		definition = strings.SplitN(definition, "CREATE TABLE oms_pnl (", 2)[0]
+	}
 	// Replace whole identifiers, never substrings of constraint names or supplied names.
-	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_events|oms_order_execution_fees|oms_order_executions)\b`)
-	schema := identifier.ReplaceAllStringFunc(reviewedSchema, func(name string) string { return quoted(names[name]) })
-	if s.orderTable != DefaultOrderTableName || s.onchainEventTable != DefaultOnchainEventTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName {
-		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.onchainEventTable + "/" + s.feeTable + "/" + s.executionTable))
+	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_events|oms_order_execution_fees|oms_order_executions|oms_pnl)\b`)
+	schema := identifier.ReplaceAllStringFunc(definition, func(name string) string { return quoted(names[name]) })
+	if s.orderTable != DefaultOrderTableName || s.onchainEventTable != DefaultOnchainEventTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName || (s.pnlTable != "" && s.pnlTable != DefaultPnLTableName) {
+		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.onchainEventTable + "/" + s.feeTable + "/" + s.executionTable + "/" + s.pnlTable))
 		constraint := regexp.MustCompile(`CONSTRAINT ([a-zA-Z0-9_]+)`)
 		schema = constraint.ReplaceAllStringFunc(schema, func(value string) string { return value + fmt.Sprintf("_%x", hash[:4]) })
 	}

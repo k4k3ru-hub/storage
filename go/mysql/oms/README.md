@@ -10,6 +10,7 @@
 | `oms_order_executions` | 1回の送信／ルーティング先のexecutionのsnapshot |
 | `oms_order_execution_onchain_events` | executionに属する受付・送信・結果・約定・訂正の追記履歴 |
 | `oms_order_execution_fees` | executionに属する複数の費用明細と調整差分 |
+| `oms_pnl` | 注文単位の集計済み境界・数量・原価・実現PnL・再開状態 |
 
 1 order : N executions、1 execution : N events / N fees。
 Onchainでは1 executionに1 Txを対応させる。同一TxのAtomicな複数legは複数filled event。
@@ -98,8 +99,48 @@ executionの状態はpending、partially_filled、filled、succeeded、failed、
 
 ## APIと原子性
 
-`NewDefaultStore()` または `NewStore(orderTable, executionTable, onchainEventTable, feeTable)`。
+PnLも使用する場合は`NewStoreWithPnL(orderTable, executionTable, onchainEventTable, feeTable, pnlTable)`。
+既存の`NewDefaultStore()`／`NewStore(...)`は原本4表だけを扱う。
 StoreはDB接続やcommitを所有しない。書込みには呼出元の`*sql.Tx`を渡す。
+
+## PnL checkpoint
+
+2026-09-28: 集計保存は`oms_pnl`の1表。注文別cursor表は追加しない。
+これは計算器の保存基盤であり、移動平均計算ワーカー・現在価格評価・公開PnL APIの接続は含まない。
+
+- Spotはaccount・wallet・namespace・chain/network・正確なasset IDで識別し、`position_order_id`はNULL。
+  Symbol・会計資産はidentity hashに含めない。同名の別Coin Typeは別行。
+  既存行と会計資産やdecimalsが異なる再登録は`ErrConflict`。通貨換算を推測しない。
+- Positionはaccount・実口座・代表Open注文IDで識別。代表注文と所有者・口座の一致を確認する。
+  商品条件は不変の注文仕様が原本。Spot原価と建玉平均価格を同じ欄へ保存しない。
+- `last_order_id`は対象範囲の完了済みprefix。単なる最大IDではない。
+  `100=完了, 101=未完了, 102=完了`なら保存境界は100。101以降は毎回原本から再評価する。
+  `SavePnL`はpending／partial、未確定execution、費用未確認を飛び越える保存を拒否する。
+  Spotのprefix検査はwallet全注文を保守的に対象とするため、無関係な資産の未完了注文でも境界が止まる。
+- 金額欄のNULLは不明。`calculation_state`は最大64 KiBのJSON objectで、計算方式・versionに対応する正確な再開状態。
+  数値欄を丸めた値だけで再開しない。stateに生履歴・署名payload・注文別cursor一覧を詰め込まない。
+  内部数値形式と経済的順序の検証は計算器が担当する。Storeは算式やJSON内の計算結果を検証しない。
+- 未計算行は金額・cursor・計算時刻がNULL、`needs_rebuild=true`、`version=1`。
+  `needs_rebuild=false`は保存prefixを再利用できる意味で、最新の全注文を反映済みという意味ではない。
+
+使用手順:
+
+1. `EnsurePnL`をcommitして対象を登録する。
+2. 別のrepeatable-readで`SelectPnL`とOMS原本を同じviewから読む。`ListPnLOrders`は未完了注文も返す。
+3. 保存状態とtailを計算する。実際の約定順を使い、新しいIDでも経済的順序が過去へ遡る場合は再構築する。
+4. 元のversionを渡して`SavePnL`する。複数資産を更新する場合は同一transactionで保存する。
+   `ErrConflict`では最新versionだけに差し替えて再送せず、原本から読み直す。deadlockでもtransaction全体を再試行する。
+5. commit後にcacheを更新する。価格tickやtailだけの暫定現在値を、完了済みprefixへ混ぜて保存しない。
+
+`InsertOrder`と`AppendOnchainEvent`は、同じaccount・walletの全PnL行のversionを原本と同じtransactionで進める。
+変更order IDが保存境界以下なら`needs_rebuild=true`も記録する。遅着した低いID、訂正、fee追記を含む。
+同一内容のevent再送はversionを進めず、rollback時は原本・PnL両方を戻す。
+複数資産の原価依存を見落とさないため初期実装ではwallet単位で保守的に無効化する。
+手動再構築は`InvalidatePnL`。再構築フラグの解除・cursor巻戻し・計算方式変更には`SavePnL(..., rebuild=true)`が必要。
+
+全書込み経路をPnL対応Storeへ切り替えてからcheckpointを作成すること。
+原本を直接SQLで更新する経路や旧4表Storeが混在すると無効化は保証できない。
+新Storeの起動前に`oms_pnl`を作成する。適用済み001へのファイル追記だけでは既存DBは更新されない。
 
 初回Submitは`InsertOrder`と`AppendOnchainEvent(submission_accepted)`を同じtransactionで実施する。
 後者はexecution snapshotの初回INSERTも行う。commit成功後にRPC送信する。

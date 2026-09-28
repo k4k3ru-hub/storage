@@ -10,6 +10,7 @@ import (
 // ID zero requests generation. Commit it with the first accepted submission; roll back on any error.
 //
 // Version:
+//   - 2026-09-28: Invalidate composed PnL checkpoints atomically, including late lower-ID inserts.
 //   - 2026-09-28: Validate and persist representative order membership.
 //   - 2026-09-27: Initialize supported counter totals from immutable units.
 //   - 2026-09-26: Replace AMM-specific creation with generic order creation.
@@ -67,6 +68,9 @@ func (s *Store) InsertOrder(ctx context.Context, tx *sql.Tx, order Order) (uint6
 	_, err = tx.ExecContext(ctx, insertSQL(s.orderTable, orderColumns), orderArgs(order)...)
 	if err != nil {
 		return 0, writeError(op, err)
+	}
+	if err := s.touchPnL(ctx, tx, order); err != nil {
+		return 0, fmt.Errorf("%s: %w", op, err)
 	}
 	return order.ID, nil
 }

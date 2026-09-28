@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func mysqlStore(t *testing.T) (*Store, *sql.DB) {
+func mysqlStore(t *testing.T, withPnL ...bool) (*Store, *sql.DB) {
 	t.Helper()
 	dsn := os.Getenv("K4K3RU_OMS_TEST_DSN")
 	if dsn == "" {
@@ -28,10 +28,16 @@ func mysqlStore(t *testing.T) (*Store, *sql.DB) {
 	})
 	prefix := fmt.Sprintf("oms_test_%d", GenerateOrderID())
 	s, err := NewStore(prefix, prefix+"_exec", prefix+"_detail", prefix+"_fee")
+	if len(withPnL) > 0 && withPnL[0] {
+		s, err = NewStoreWithPnL(prefix, prefix+"_exec", prefix+"_detail", prefix+"_fee", prefix+"_pnl")
+	}
 	must(t, err)
 	must(t, s.CreateTables(t.Context(), db))
 	t.Cleanup(func() {
-		for _, name := range []string{s.feeTable, s.onchainEventTable, s.executionTable, s.orderTable} {
+		for _, name := range []string{s.pnlTable, s.feeTable, s.onchainEventTable, s.executionTable, s.orderTable} {
+			if name == "" {
+				continue
+			}
 			if _, err := db.Exec("DROP TABLE " + quoted(name)); err != nil {
 				t.Error(err)
 			}

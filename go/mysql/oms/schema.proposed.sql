@@ -258,3 +258,49 @@ CREATE TABLE oms_order_execution_fees (
         AND CHAR_LENGTH(amount) > 0 AND CHAR_LENGTH(source_reference) > 0 AND asset_decimals <= 255
     )
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+
+CREATE TABLE oms_pnl (
+    id BIGINT UNSIGNED NOT NULL,
+    account_id BIGINT UNSIGNED NOT NULL,
+    account_ref VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    subject_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    subject_key BINARY(32) NOT NULL COMMENT 'SHA-256 of the canonical subject identity, excluding display symbol',
+    position_order_id BIGINT UNSIGNED NULL,
+    definition_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+    definition JSON NOT NULL COMMENT 'Typed inventory and accounting asset identities and units',
+    last_order_id BIGINT UNSIGNED NULL COMMENT 'Complete order prefix; not MAX(id) of independently finished orders',
+    remaining_quantity VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    remaining_cost VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Spot cost basis; NULL for position groups or unknown basis',
+    average_entry_price VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Position entry price; NULL for spot inventory or unknown price',
+    realized_pnl VARCHAR(384) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Signed amount in the exact accounting asset; NULL means unknown',
+    calculation_method VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    calculation_version SMALLINT UNSIGNED NULL,
+    calculation_state JSON NULL COMMENT 'Bounded, versioned exact restart state; no per-order cursors or raw history',
+    needs_rebuild BOOLEAN NOT NULL DEFAULT TRUE,
+    version BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'Incremented by source writes, invalidation and checkpoint publication',
+    calculated_at DATETIME(6) NULL COMMENT 'Calculation time, not a source cursor or proof of currentness',
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_oms_pnl_subject (account_id, subject_type, subject_key),
+    KEY idx_oms_pnl_account_wallet (account_id, account_ref, id),
+    KEY idx_oms_pnl_rebuild (needs_rebuild, account_id, id),
+    CONSTRAINT fk_oms_pnl_position FOREIGN KEY (position_order_id, account_id) REFERENCES oms_orders(id, account_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_oms_pnl_last_order FOREIGN KEY (last_order_id, account_id) REFERENCES oms_orders(id, account_id) ON DELETE RESTRICT,
+    CONSTRAINT ck_oms_pnl_identity CHECK (id > 0 AND account_id > 0 AND CHAR_LENGTH(account_ref) > 0),
+    CONSTRAINT ck_oms_pnl_subject CHECK (
+        (subject_type = 'spot_inventory' AND position_order_id IS NULL AND average_entry_price IS NULL)
+        OR (subject_type = 'position_group' AND position_order_id IS NOT NULL AND position_order_id > 0 AND remaining_cost IS NULL)
+    ),
+    CONSTRAINT ck_oms_pnl_definition CHECK (definition_version = 1 AND JSON_TYPE(definition) = 'OBJECT'),
+    CONSTRAINT ck_oms_pnl_version CHECK (version > 0 AND needs_rebuild IN (0, 1)),
+    CONSTRAINT ck_oms_pnl_cursor CHECK (last_order_id IS NULL OR last_order_id > 0),
+    CONSTRAINT ck_oms_pnl_calculation CHECK (
+        (calculated_at IS NULL AND last_order_id IS NULL AND calculation_method IS NULL AND calculation_version IS NULL
+            AND calculation_state IS NULL AND remaining_quantity IS NULL AND remaining_cost IS NULL
+            AND average_entry_price IS NULL AND realized_pnl IS NULL AND needs_rebuild = TRUE)
+        OR (calculated_at IS NOT NULL AND calculation_method IS NOT NULL AND CHAR_LENGTH(calculation_method) > 0
+            AND calculation_version IS NOT NULL AND calculation_version > 0
+            AND calculation_state IS NOT NULL AND JSON_TYPE(calculation_state) = 'OBJECT')
+    )
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
