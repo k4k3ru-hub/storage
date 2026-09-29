@@ -399,6 +399,7 @@ func TestMySQLConcurrentAppend(t *testing.T) {
 // TestSchemaParity verifies that the embedded Store DDL matches the approved TradeHub 001.
 //
 // Version:
+//   - 2026-09-29: Compare shared and Perpetual DDL separately within consolidated 001.
 //   - 2026-09-26: Added.
 func TestSchemaParity(t *testing.T) {
 	path := os.Getenv("K4K3RU_OMS_MIGRATION_PATH")
@@ -412,8 +413,21 @@ func TestSchemaParity(t *testing.T) {
 	if start < 0 {
 		t.Fatal("OMS schema marker missing")
 	}
-	if strings.ReplaceAll(sql[start:], "trade_hub_oms_", "oms_") != reviewedSchema {
+	shared, _, found := strings.Cut(sql[start:], "-- 2026-09-29: Perpetual OMS is included in the initial schema.")
+	if !found {
+		t.Fatal("consolidated Perpetual schema marker missing")
+	}
+	if strings.TrimSpace(strings.ReplaceAll(shared, "trade_hub_oms_", "oms_")) != strings.TrimSpace(reviewedSchema) {
 		t.Fatal("Store DDL differs from TradeHub 001")
+	}
+	start = strings.Index(sql, "CREATE TABLE trade_hub_oms_order_execution_perpetual_events (")
+	if start < 0 {
+		t.Fatal("Perpetual event DDL missing")
+	}
+	const terminator = ") ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;"
+	event, _, found := strings.Cut(sql[start:], terminator)
+	if !found || strings.TrimSpace(strings.ReplaceAll(event+terminator, "trade_hub_oms_", "oms_")) != strings.TrimSpace(perpetualSchema) {
+		t.Fatal("Perpetual Store DDL differs from TradeHub 001")
 	}
 }
 

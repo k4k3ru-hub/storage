@@ -18,6 +18,7 @@ const (
 	OrderStatusFailed          OrderStatus = "failed"
 	OrderStatusRejected        OrderStatus = "rejected"
 	DomainOnchainAMMPool                   = "onchain-amm-pool"
+	DomainPerpetual                        = "perpetual"
 )
 
 type EventType string
@@ -82,6 +83,8 @@ const (
 	ExecutionStatusSucceeded       ExecutionStatus = "succeeded"
 	ExecutionStatusFailed          ExecutionStatus = "failed"
 	ExecutionStatusRejected        ExecutionStatus = "rejected"
+	ExecutionStatusCanceled        ExecutionStatus = "canceled"
+	ExecutionStatusExpired         ExecutionStatus = "expired"
 )
 
 // Execution is the current state of one routed execution. Quantities use the order's unit.

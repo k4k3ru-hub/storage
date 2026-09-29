@@ -1,4 +1,4 @@
--- OMS order/execution snapshots and append-only onchain events, 2026-09-26. Breaking fresh-DB schema.
+-- OMS order/execution snapshots and append-only onchain/Perpetual events. Fresh-DB schema.
 -- Quote, Prepare and approval are not persisted. Submit starts the history.
 -- MySQL 8.4 / InnoDB; timestamps are UTC; decimal values are canonical strings.
 -- The subsequent Store/operation changes must precede deployment to this schema.
@@ -60,7 +60,7 @@ CREATE TABLE oms_order_executions (
     order_id BIGINT UNSIGNED NOT NULL,
     execution_system VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     execution_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Public execution identifier',
-    event_family VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Adapter owning the event history, currently onchain',
+    event_family VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'Adapter owning the event history: onchain or perpetual',
     venue VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     venue_order_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Venue-assigned order ID; scoped by venue, environment and execution account',
     client_order_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT 'Client-assigned order ID persisted before sending when supported',
@@ -81,7 +81,7 @@ CREATE TABLE oms_order_executions (
     KEY idx_oms_execution_client_order (venue, client_order_id, order_id),
     KEY idx_oms_execution_pending (event_family, status, id),
     CONSTRAINT fk_oms_execution_order FOREIGN KEY (order_id) REFERENCES oms_orders(id) ON DELETE RESTRICT,
-    CONSTRAINT ck_oms_execution_status CHECK (status IN ('pending', 'partially_filled', 'filled', 'succeeded', 'failed', 'rejected')),
+    CONSTRAINT ck_oms_execution_status CHECK (status IN ('pending', 'partially_filled', 'filled', 'succeeded', 'failed', 'rejected', 'canceled', 'expired')),
     CONSTRAINT ck_oms_execution_required CHECK (CHAR_LENGTH(execution_system) > 0 AND CHAR_LENGTH(execution_id) > 0 AND CHAR_LENGTH(event_family) > 0 AND CHAR_LENGTH(venue) > 0 AND CHAR_LENGTH(filled_quantity) > 0),
     CONSTRAINT ck_oms_execution_fees CHECK (fees_complete IN (0, 1)),
     CONSTRAINT ck_oms_execution_venue_order CHECK (venue_order_id IS NULL OR CHAR_LENGTH(venue_order_id) > 0),

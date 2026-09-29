@@ -15,6 +15,7 @@ import (
 // No RPC or network operation may be performed while holding this transaction.
 //
 // Version:
+//   - 2026-09-29: Reject Perpetual orders at the onchain write boundary.
 //   - 2026-09-28: Version and invalidate composed PnL checkpoints in the source transaction.
 //   - 2026-09-28: Project immutable external order identifiers from event evidence.
 //   - 2026-09-27: Persist both counter snapshots and validate the asset scope.
@@ -24,6 +25,9 @@ func (s *Store) AppendOnchainEvent(ctx context.Context, tx *sql.Tx, accountID ui
 	order, err := s.SelectOrderForUpdate(ctx, tx, accountID, record.Event.OrderID)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	if order.Domain == DomainPerpetual {
+		return nil, fmt.Errorf("%s: %w: event_family=invalid", op, ErrConflict)
 	}
 	asset, err := order.CounterQuantityAsset()
 	if err != nil {
@@ -251,6 +255,7 @@ func (s *Store) SelectSubmissionPayload(ctx context.Context, executor api.Execut
 // Original costs and signed adjustments are returned unchanged; no currency conversion is inferred.
 //
 // Version:
+//   - 2026-09-29: Resolve event ownership through the order event family.
 //   - 2026-09-26: Added.
 func (s *Store) ListEventFees(ctx context.Context, executor api.Executor, accountID, orderID, recordID uint64) ([]ExecutionFee, error) {
 	const op = "failed to list oms execution fees"
@@ -260,8 +265,19 @@ func (s *Store) ListEventFees(ctx context.Context, executor api.Executor, accoun
 	if err := identity(accountID, orderID); err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
+	order, err := s.SelectOrder(ctx, executor, accountID, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	table, family := s.onchainEventTable, "onchain"
+	if order.Domain == DomainPerpetual {
+		table, family = s.perpetualEventTable, "perpetual"
+	}
+	if table == "" {
+		return nil, fmt.Errorf("%s: %w", op, invalid("event_table", "null"))
+	}
 	var id uint64
-	err := executor.QueryRowContext(ctx, "SELECT e.id FROM "+quoted(s.onchainEventTable)+" e JOIN "+quoted(s.orderTable)+" o ON o.id=e.order_id WHERE o.account_id=? AND o.id=? AND e.id=?", accountID, orderID, recordID).Scan(&id)
+	err = executor.QueryRowContext(ctx, "SELECT e.id FROM "+quoted(table)+" e JOIN "+quoted(s.orderTable)+" o ON o.id=e.order_id JOIN "+quoted(s.executionTable)+" x ON x.id=e.execution_record_id AND x.order_id=e.order_id WHERE o.account_id=? AND o.id=? AND e.id=? AND x.event_family=?", accountID, orderID, recordID, family).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}

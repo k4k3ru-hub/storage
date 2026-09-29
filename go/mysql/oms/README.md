@@ -266,3 +266,30 @@ DB時刻はUTC、DSNはparseTime=true&loc=UTCを使う。実チェーンへの�
 既存行の新列はNULLとし、`parent_order_id`や`execution_id`から自動推測しない。
 ローカルのTradeHubはgo.workでこのモジュールを参照する。公開依存versionの更新にはstorageの公開が必要。
 TradeHub local composeのビルドは追加contextからこのStoreを取り込む。
+
+## Perpetual history (2026-09-29)
+
+`NewStoreWithPerpetual(orderTable, executionTable, onchainTable, feeTable,
+pnlTable, perpetualTable)` explicitly composes `oms_order_execution_perpetual_events`.
+An empty `pnlTable` retains the original store's behavior. Existing constructors
+remain available. `CreateTables` includes `schema.perpetual.sql` only with this
+composition. Existing databases need the application's additive migration;
+`CreateTables` is not an upgrade operation.
+
+`AppendPerpetualEvent` locks the owned Order, checks existing Order/Execution
+snapshots against replay, deduplicates facts and fees, and appends atomically in
+the caller's transaction. This initial adapter requires one execution per order,
+`domain=perpetual`, venue assets and exact quantity × price notional. Cancellation
+and expiry are represented explicitly in the Execution snapshot. Original fills
+have unique compound identity hashes; corrections reference existing events.
+
+`ListPerpetualEvents` uses the same exclusive order sequence cursor as onchain
+history. `SelectPerpetualEventByKey` returns an owned fact and its fees.
+`ListEventFees` validates the event family before following the logical event
+reference. Onchain append rejects Perpetual orders.
+
+Venue state, fill details, closed PnL and typed protocol facts belong to this
+history. Usable signatures and prepared tokens must never enter protocol facts.
+The venue adapter verifies scope, accounting units and completeness proofs.
+TradeHub owns the separate dispatch/reconciliation table and network worker.
+Perpetual notional is excluded from the existing spot PnL calculation.

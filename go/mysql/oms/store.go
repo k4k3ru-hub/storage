@@ -25,10 +25,15 @@ const (
 	DefaultPnLTableName          = "oms_pnl"
 )
 
+const DefaultPerpetualEventTableName = "oms_order_execution_perpetual_events"
+
+//go:embed schema.perpetual.sql
+var perpetualSchema string
+
 //go:embed schema.proposed.sql
 var reviewedSchema string
 
-type Store struct{ orderTable, executionTable, onchainEventTable, feeTable, pnlTable string }
+type Store struct{ orderTable, executionTable, onchainEventTable, feeTable, pnlTable, perpetualEventTable string }
 
 // NewStore composes an OMS store with explicit table names and no database ownership.
 //
@@ -86,22 +91,30 @@ func NewDefaultStore() (*Store, error) {
 // MySQL DDL is not transactional; invoke this only from explicit migration code.
 //
 // Version:
+//   - 2026-09-29: Include Perpetual history only when explicitly composed.
 //   - 2026-09-28: Include PnL only when explicitly composed with NewStoreWithPnL.
 //   - 2026-09-26: Separate execution snapshots and onchain event history.
 func (s *Store) CreateTables(ctx context.Context, executor api.Executor) error {
 	if err := s.guard(ctx, executor); err != nil {
 		return fmt.Errorf("failed to create oms tables: %w", err)
 	}
-	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainEventTableName: s.onchainEventTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable, DefaultPnLTableName: s.pnlTable}
+	names := map[string]string{DefaultOrderTableName: s.orderTable, DefaultOnchainEventTableName: s.onchainEventTable, DefaultFeeTableName: s.feeTable, DefaultExecutionTableName: s.executionTable, DefaultPnLTableName: s.pnlTable, DefaultPerpetualEventTableName: s.perpetualEventTable}
 	definition := reviewedSchema
 	if s.pnlTable == "" {
 		definition = strings.SplitN(definition, "CREATE TABLE oms_pnl (", 2)[0]
 	}
+	if s.perpetualEventTable != "" {
+		definition += "\n" + perpetualSchema
+	}
 	// Replace whole identifiers, never substrings of constraint names or supplied names.
-	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_events|oms_order_execution_fees|oms_order_executions|oms_pnl)\b`)
+	identifier := regexp.MustCompile(`\b(?:oms_orders|oms_order_execution_onchain_events|oms_order_execution_fees|oms_order_executions|oms_pnl|oms_order_execution_perpetual_events)\b`)
 	schema := identifier.ReplaceAllStringFunc(definition, func(name string) string { return quoted(names[name]) })
-	if s.orderTable != DefaultOrderTableName || s.onchainEventTable != DefaultOnchainEventTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName || (s.pnlTable != "" && s.pnlTable != DefaultPnLTableName) {
-		hash := sha256.Sum256([]byte(s.orderTable + "/" + s.onchainEventTable + "/" + s.feeTable + "/" + s.executionTable + "/" + s.pnlTable))
+	if s.orderTable != DefaultOrderTableName || s.onchainEventTable != DefaultOnchainEventTableName || s.feeTable != DefaultFeeTableName || s.executionTable != DefaultExecutionTableName || (s.pnlTable != "" && s.pnlTable != DefaultPnLTableName) || (s.perpetualEventTable != "" && s.perpetualEventTable != DefaultPerpetualEventTableName) {
+		identity := s.orderTable + "/" + s.onchainEventTable + "/" + s.feeTable + "/" + s.executionTable + "/" + s.pnlTable
+		if s.perpetualEventTable != "" {
+			identity += "/" + s.perpetualEventTable
+		}
+		hash := sha256.Sum256([]byte(identity))
 		constraint := regexp.MustCompile(`CONSTRAINT ([a-zA-Z0-9_]+)`)
 		schema = constraint.ReplaceAllStringFunc(schema, func(value string) string { return value + fmt.Sprintf("_%x", hash[:4]) })
 	}
