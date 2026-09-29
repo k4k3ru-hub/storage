@@ -70,11 +70,19 @@ type Cursor struct {
 }
 
 type Batch struct {
-	Cursor          Cursor
-	Snapshots       []Snapshot
-	Events          []Event
-	ActivityMinutes []ActivityMinute
-	ResetActivity   []Identity
+	Cursor               Cursor
+	Snapshots            []Snapshot
+	Events               []Event
+	ActivityMinutes      []ActivityMinute
+	ResetActivity        []Identity
+	SenderSnapshots      []SenderSnapshot
+	SenderTransactions   []SenderTransaction
+	SenderEvents         []SenderEvent
+	SenderEvidence       []Event              // Transaction-local proof only; never inserted into the raw event archive.
+	SenderInvalidations  []SenderInvalidation // Mark existing evidence unavailable without loading or replacing it.
+	ResetSenders         []Identity
+	AdmitSenderEvents    [][32]byte // SenderEvents IDs explicitly admitted for the first time.
+	ReacceptSenderEvents [][32]byte // Retained SenderEvents IDs authoritatively restored to the canonical chain.
 }
 
 // ID returns the case-sensitive, length-delimited pool identity digest.
@@ -150,6 +158,9 @@ func (s Source) Validate() error {
 //   - 2026-09-18: Validate NewPair verification state.
 //   - 2026-09-19: Validate observed swaps and paired liquidity evaluation values.
 //   - 2026-09-27: Validate atomic minute updates and creation resets.
+//   - 2026-09-28: Validate atomic sender collection updates.
+//   - 2026-09-29: Require explicit sender admission and canonical reacceptance intents.
+//   - 2026-09-29: Validate transient sender evidence without requiring archival storage.
 func (b Batch) Validate() error {
 	if err := b.Cursor.Source.Validate(); err != nil {
 		return fmt.Errorf("failed to validate amm pool batch: %w", err)
@@ -185,7 +196,10 @@ func (b Batch) Validate() error {
 			return fmt.Errorf("failed to validate amm pool batch: event=invalid")
 		}
 	}
-	return b.validateActivity()
+	if err := b.validateActivity(); err != nil {
+		return err
+	}
+	return b.validateSenders()
 }
 func sameScope(i Identity, s Source) bool {
 	return i.ChainFamily == s.ChainFamily && i.Chain == s.Chain && i.Network == s.Network && i.Venue == s.Venue

@@ -289,7 +289,7 @@ CREATE TABLE oms_pnl (
     CONSTRAINT fk_oms_pnl_last_order FOREIGN KEY (last_order_id, account_id) REFERENCES oms_orders(id, account_id) ON DELETE RESTRICT,
     CONSTRAINT ck_oms_pnl_identity CHECK (id > 0 AND account_id > 0 AND CHAR_LENGTH(account_ref) > 0),
     CONSTRAINT ck_oms_pnl_subject CHECK (
-        (subject_type = 'spot_inventory' AND position_order_id IS NULL AND average_entry_price IS NULL)
+        (subject_type IN ('spot_inventory', 'spot_round_trip') AND position_order_id IS NULL AND average_entry_price IS NULL)
         OR (subject_type = 'position_group' AND position_order_id IS NOT NULL AND position_order_id > 0 AND remaining_cost IS NULL)
     ),
     CONSTRAINT ck_oms_pnl_definition CHECK (definition_version = 1 AND JSON_TYPE(definition) = 'OBJECT'),

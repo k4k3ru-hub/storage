@@ -37,6 +37,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 //   - 2026-09-16: Added.
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-27: Include atomic activity minute persistence.
+//   - 2026-09-28: Include sender tables and generated constraint name bounds.
 func NewStoreWithTablePrefix(db *sql.DB, prefix string) (*Store, error) {
 	if db == nil {
 		return nil, fmt.Errorf("failed to create amm pool store: database=null")
@@ -44,11 +45,14 @@ func NewStoreWithTablePrefix(db *sql.DB, prefix string) (*Store, error) {
 	if prefix != "" && !regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`).MatchString(prefix) {
 		return nil, fmt.Errorf("failed to create amm pool store: table_prefix=invalid")
 	}
-	names := []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes"}
+	names := []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes", "onchain_amm_pool_new_pair_sender_snapshots", "onchain_amm_pool_new_pair_sender_transactions", "onchain_amm_pool_new_pair_sender_events"}
 	replacements := make([]string, 0, len(names)*2)
 	for _, name := range names {
 		if len(prefix)+len(name) > 64 {
 			return nil, fmt.Errorf("failed to create amm pool store: table_name=too_long max_length=64")
+		}
+		if strings.Contains(name, "_sender_") && len(prefix)+len(name)+len("_ibfk_1") > 64 {
+			return nil, fmt.Errorf("failed to create amm pool store: constraint_name=too_long max_length=64")
 		}
 		replacements = append(replacements, name, "`"+prefix+name+"`")
 	}
@@ -64,6 +68,7 @@ func (s *Store) query(query string) string { return s.tableNames.Replace(query) 
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 //   - 2026-09-27: Include atomic activity minute persistence.
+//   - 2026-09-28: Include short-lived sender persistence.
 func (s *Store) Schema() string { return s.query(schema) }
 
 // Schema returns the version-one DDL for application migrations.
@@ -73,6 +78,7 @@ func (s *Store) Schema() string { return s.query(schema) }
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 //   - 2026-09-27: Include atomic activity minute persistence.
+//   - 2026-09-28: Include short-lived sender persistence.
 func Schema() string { return schema }
 
 // CreateTables applies initial DDL when explicitly called by a migration runner.
@@ -82,6 +88,7 @@ func Schema() string { return schema }
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 //   - 2026-09-27: Include atomic activity minute persistence.
+//   - 2026-09-28: Include short-lived sender persistence.
 func (s *Store) CreateTables(ctx context.Context) error {
 	for _, statement := range strings.Split(schema, ";") {
 		if strings.TrimSpace(statement) == "" {
@@ -125,6 +132,10 @@ func (s *Store) Cursor(ctx context.Context, source Source) (Cursor, error) {
 //   - 2026-09-18: Save snapshots before events to satisfy snapshot ownership constraints.
 //   - 2026-09-19: Use observed swap fields and creation-based retention.
 //   - 2026-09-27: Include atomic activity minute persistence.
+//   - 2026-09-28: Commit sender admission, cancellation and generation changes atomically.
+//   - 2026-09-29: Normalize event times to microseconds and distinguish sender write intents.
+//   - 2026-09-29: Verify dedicated sender evidence in the same transaction without archiving it.
+//   - 2026-09-29: Persist sender invalidations atomically even when collection is unavailable.
 func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 	if err = b.Validate(); err != nil {
 		return fmt.Errorf("failed to commit amm pool batch: %w", err)
@@ -173,13 +184,16 @@ func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 		_, err = tx.ExecContext(ctx, s.query(`INSERT INTO onchain_amm_pool_new_pair_events
 	  (id,pool_id,source_id,position_number,position_id,transaction_id,event_index,event_type,occurred_at,observed_at,payload,is_canonical)
 	  VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE is_canonical=VALUES(is_canonical)`),
-			id[:], pid[:], sourceID[:], e.PositionNumber, e.PositionID, e.TransactionID, e.Index, e.Type, e.OccurredAt.UTC(), e.ObservedAt.UTC(), []byte(e.Payload), e.Canonical)
+			id[:], pid[:], sourceID[:], e.PositionNumber, e.PositionID, e.TransactionID, e.Index, e.Type, dbTime(e.OccurredAt), dbTime(e.ObservedAt), []byte(e.Payload), e.Canonical)
 		if err != nil {
 			return fmt.Errorf("failed to save amm pool event: %w", err)
 		}
 	}
 	if err := s.commitActivity(ctx, tx, b); err != nil {
 		return err
+	}
+	if err := s.commitSenders(ctx, tx, b); err != nil {
+		return fmt.Errorf("failed to commit amm pool batch: %w", err)
 	}
 	_, err = tx.ExecContext(ctx, s.query("UPDATE onchain_amm_pool_new_pair_sync_cursors SET position=?,revision=revision+1,updated_at=? WHERE id=?"), []byte(c.Position), c.UpdatedAt.UTC(), sourceID[:])
 	if err != nil {
@@ -265,32 +279,9 @@ func (s *Store) Load(ctx context.Context, since time.Time) (result []Snapshot, e
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-18: Prune snapshots by their lifecycle anchor.
 //   - 2026-09-19: Use observed swap fields and creation-based retention.
+//   - 2026-09-29: Share bounded snapshot deletion with observable pruning.
 func (s *Store) Prune(ctx context.Context, eventBefore, snapshotBefore time.Time) error {
-	if eventBefore.IsZero() || snapshotBefore.IsZero() {
-		return fmt.Errorf("failed to prune amm pool history: retention=invalid")
-	}
-	for _, q := range []struct {
-		sql    string
-		before time.Time
-	}{
-		{"DELETE FROM onchain_amm_pool_new_pair_events WHERE observed_at<? LIMIT 1000", eventBefore},
-		{"DELETE FROM onchain_amm_pool_new_pair_snapshots WHERE pool_created_at<? LIMIT 1000", snapshotBefore},
-	} {
-		for batch := 0; batch < 100; batch++ {
-			result, err := s.db.ExecContext(ctx, s.query(q.sql), q.before.UTC())
-			if err != nil {
-				return fmt.Errorf("failed to prune amm pool history: %w", err)
-			}
-			count, err := result.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("failed to read pruned row count: %w", err)
-			}
-			if count < 1000 {
-				break
-			}
-		}
-	}
-	return nil
+	return s.PruneWithDeletedSnapshots(ctx, eventBefore, snapshotBefore, nil)
 }
 
 // Events loads canonical events of unconfirmed pools created at or after since.

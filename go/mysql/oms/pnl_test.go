@@ -134,3 +134,35 @@ func TestPnLValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestRoundTripPnLIdentity separates funding units while retaining exact held assets.
+//
+// Version:
+//   - 2026-09-29: Added.
+func TestRoundTripPnLIdentity(t *testing.T) {
+	a := testPnLScope()
+	a.SubjectType = PnLSubjectSpotRoundTrip
+	must(t, a.validate())
+	key, err := a.key()
+	must(t, err)
+	b := a
+	b.AccountingAsset = QuantityAsset{Namespace: "currency", AssetID: "USDC", Symbol: "USDC", Decimals: 6}
+	must(t, b.validate())
+	other, err := b.key()
+	must(t, err)
+	if key == other {
+		t.Fatal("funding units merged")
+	}
+	b.InventoryAsset = &QuantityAsset{Namespace: "onchain", Chain: "sui", Network: "testnet", AssetID: "another-token", Decimals: 9}
+	third, err := b.key()
+	must(t, err)
+	if third == other {
+		t.Fatal("held assets merged")
+	}
+	cp := testPnLCheckpoint(1)
+	must(t, cp.validate(PnLSubjectSpotRoundTrip))
+	cp.AverageEntryPrice = ptr("1")
+	if !errors.Is(cp.validate(PnLSubjectSpotRoundTrip), ErrInvalidParameter) {
+		t.Fatal("inventory accepted position price")
+	}
+}

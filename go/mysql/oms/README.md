@@ -105,10 +105,16 @@ StoreはDB接続やcommitを所有しない。書込みには呼出元の`*sql.T
 
 ## PnL checkpoint
 
+`spot_round_trip`は、取得資産と元の支払単位によるSpot往復の派生状態。
+`InventoryAsset`は正確な取得Token、`AccountingAsset`は元の支払単位で、両方をsubject keyへ含める。
+共通USDCは`Namespace="currency", AssetID="USDC", Decimals=6`。取得TokenのIDは統合しない。
+`remaining_cost`／`realized_pnl`は元の支払単位。USDC換算済み累積損益と有理数の原価は計算器所有の`calculation_state`へ保持する。
+旧`spot_inventory`とは別subjectで、既存行を保持できる。StoreはTokenの信頼判定やUSDC換算を行わない。
+
 2026-09-28: 集計保存は`oms_pnl`の1表。注文別cursor表は追加しない。
 これは計算器の保存基盤であり、移動平均計算ワーカー・現在価格評価・公開PnL APIの接続は含まない。
 
-- Spotはaccount・wallet・namespace・chain/network・正確なasset IDで識別し、`position_order_id`はNULL。
+- 従来の`spot_inventory`はaccount・wallet・namespace・chain/network・正確なasset IDで識別し、`position_order_id`はNULL。
   Symbol・会計資産はidentity hashに含めない。同名の別Coin Typeは別行。
   既存行と会計資産やdecimalsが異なる再登録は`ErrConflict`。通貨換算を推測しない。
 - Positionはaccount・実口座・代表Open注文IDで識別。代表注文と所有者・口座の一致を確認する。

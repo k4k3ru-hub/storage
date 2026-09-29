@@ -14,6 +14,7 @@ type PnLSubjectType string
 
 const (
 	PnLSubjectSpotInventory PnLSubjectType = "spot_inventory"
+	PnLSubjectSpotRoundTrip PnLSubjectType = "spot_round_trip"
 	PnLSubjectPositionGroup PnLSubjectType = "position_group"
 	maxPnLStateBytes                       = 64 * 1024
 )
@@ -21,6 +22,7 @@ const (
 var pnlIDGenerator generator.ID
 
 // PnLScope fixes the exact accounting subject and valuation unit of a checkpoint.
+// Round-trip inventory also keys by AccountingAsset, its original funding unit.
 // Position instrument metadata remains on the immutable representative OMS order.
 type PnLScope struct {
 	AccountRef      string
@@ -94,7 +96,7 @@ func (v PnLScope) validate() error {
 		return err
 	}
 	switch v.SubjectType {
-	case PnLSubjectSpotInventory:
+	case PnLSubjectSpotInventory, PnLSubjectSpotRoundTrip:
 		if v.PositionOrderID != nil || v.InventoryAsset == nil {
 			return invalid("inventory_scope", "invalid")
 		}
@@ -118,6 +120,11 @@ func (v PnLScope) key() ([32]byte, error) {
 		parts = append(parts, a.Namespace, a.Chain, a.Network, a.AssetID)
 	} else {
 		parts = append(parts, v.PositionOrderID)
+	}
+	// Round trips also identify the original funding unit; inventory identities stay unchanged.
+	if v.SubjectType == PnLSubjectSpotRoundTrip {
+		a := v.AccountingAsset
+		parts = append(parts, a.Namespace, a.Chain, a.Network, a.AssetID)
 	}
 	b, err := json.Marshal(parts)
 	if err != nil {
@@ -155,7 +162,7 @@ func (v PnLCheckpoint) validate(kind PnLSubjectType) error {
 	if err := jsonObject("calculation_state", v.CalculationState, true); err != nil {
 		return err
 	}
-	if kind == PnLSubjectSpotInventory && v.AverageEntryPrice != nil || kind == PnLSubjectPositionGroup && v.RemainingCost != nil {
+	if (kind == PnLSubjectSpotInventory || kind == PnLSubjectSpotRoundTrip) && v.AverageEntryPrice != nil || kind == PnLSubjectPositionGroup && v.RemainingCost != nil {
 		return invalid("calculation_subject", "invalid")
 	}
 	for _, f := range []struct {

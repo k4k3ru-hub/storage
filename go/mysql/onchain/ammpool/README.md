@@ -107,3 +107,182 @@ to minute rows. Apply the additional DDL before enabling these readers.
 The optional `TestMySQLActivityAtomicity` integration test covers exact large
 counts, cursor conflict, rollback after a parent write, correction replacement,
 source isolation, creation reset and cascade deletion.
+
+## Short-window transaction senders (2026-09-28)
+
+Three additional tables store the minimum durable evidence for 5m/15m sender
+counts. They do not store address arrays in the parent JSON or minute totals.
+
+| Table suffix | Ownership and contents |
+|---|---|
+| `sender_snapshots` | One row per parent Pool: creation evidence digest, generation and invalid minute interval |
+| `sender_transactions` | One shared network transaction: sender, retry reservation, deadline and deletion eligibility |
+| `sender_events` | Admitted Swap occurrence: generation, transaction reference, position, minute, direction and canonical flag |
+
+Names begin with `onchain_amm_pool_new_pair_`; MarketHub supplies `market_hub_`
+through `NewStoreWithTablePrefix`. Identifiers use the existing length-delimited
+SHA-256 convention. `SenderEvent.ID()` equals `Event.ID()` for the same occurrence;
+`SenderTransactionKey.ID()` excludes the Venue and Pool so different Pools can
+share a lookup. The adapter normalizes EVM identifiers; storage preserves case.
+
+### Atomic admission and corrections
+
+Add `Batch.SenderSnapshots`, `SenderTransactions`, `SenderEvents`, and, when
+rebuilding, `ResetSenders` to the existing `Commit`. Every affected Pool must also
+have its parent in `Batch.Snapshots`. `SenderEvents` alone updates retained rows;
+it never inserts a missing row, even if `Batch.Events` repeats the original event.
+A timestamp-only correction of an existing row need not repeat the raw event.
+
+Use explicit, disjoint subsets of `SenderEvent.ID()` for these operations:
+
+| Batch field | Effect |
+|---|---|
+| `AdmitSenderEvents` | Permit first insertion for newly accepted Swap occurrences; require matching canonical `Batch.Events` evidence |
+| `ReacceptSenderEvents` | Permit a retained canceled occurrence to become canonical after the adapter verifies chain re-adoption; require matching canonical `Batch.Events` evidence |
+
+Only explicit admissions may supply `SenderTransactions` for initialization.
+Matching proof may be supplied through `Batch.SenderEvidence` instead of
+`Batch.Events`. It is validated in the same transaction but is never inserted
+into the long-lived raw event archive. Its identities must refer to sender rows
+in this batch; conflicting archived and dedicated proof is rejected. Existing
+`Batch.Events` callers remain compatible. This avoids a second Swap archive
+when Activity already owns the durable observation in its snapshot/minute rows.
+
+Ordinary corrections and reacceptances reuse retained transaction references
+and cannot create a new lookup. Reacceptance does not recreate a missing or
+logically expired occurrence. The adapter must not mark delayed metadata or
+duplicate history as a new admission.
+
+Cancellation requires the matching noncanonical event. It preserves the saved
+minute and expiry, ignoring accompanying time corrections, so a late header
+cannot block the cancellation or extend retention. Activity/cursor and sender
+corrections commit or roll back together.
+
+New collection generations start at one. Changing creation evidence requires an
+explicit reset with the previous generation plus one; the transaction deletes
+old children before updating the parent. Within a generation, initialization
+and creation identity are immutable. A live invalid interval can only expand;
+it can be cleared after leaving the completed 15-minute window. Determining
+which intervals lost integrity and which Pools are listed belongs to MarketHub.
+
+Initial transaction rows have zero attempts and are pending, or resolved when
+the caller already has a verified sender. Duplicate admission preserves the
+first row's sender, attempts, status and deadlines. It never reopens an abandoned
+transaction. A contradictory resolved sender is rejected. Ordinary replays and
+late lookup results cannot make canceled occurrences canonical; only explicit
+reacceptance with current Activity evidence may do that.
+
+Known event expiry is `minute_started_at + 16 minutes`; unknown-minute expiry is
+`observed_at + 2 minutes`. Minute adoption must happen before both the old and
+new expiry. Corrections arriving at/after that deadline are skipped even before
+GC, without failing an otherwise valid Activity commit. Callers must apply the
+same lifetime checks before adopting corrections into memory: Commit success
+does not mean a missing or expired sender row was updated. Original observation
+time and occurrence identity are immutable. Both raw Event timestamps and sender
+timestamps are truncated to UTC microseconds before SQL writes; MySQL rounding
+must not give the same observation two different stored times. An already
+expired or non-admitted cancellation does not recreate a row.
+
+### Lookup reservation and completion
+
+1. After admission commits, call `ReserveSenderAttempt` with the expected attempt
+   count and the current time. It locks only the shared transaction row, increments
+   the durable count and stores a ten-second lease in `next_attempt_at`, capped
+   by the fixed deadline. Send the RPC only after this operation commits.
+2. Call `CompleteSenderAttempt` with the returned reservation and a success,
+   retry, or abandonment result. It checks the attempt, lease, timestamps and
+   fixed lifetime against the stored row. A superseded reservation or terminal
+   row returns an inspectable `ErrSenderConflict`.
+3. A retry must be scheduled strictly before the fixed deadline. At most four
+   reservations are permitted. A crash after reservation consumes that attempt;
+   it is never rolled back just because the caller cannot prove it sent the RPC.
+4. `ExpireSenderTransactions` abandons elapsed deadlines or exhausted attempts
+   after their active lease ends. It changes at most 1,000 rows per call.
+
+`SenderTransaction` reads one shared record for recovery. Lookup operations do
+not rewrite Pool JSON or advance its revision. All operations return errors;
+this package emits no logs and performs no RPC. MarketHub must provide worker
+ownership, the rolling 30-request budget, endpoint limits and the restart delay.
+It must recheck actual send eligibility after database/endpoint waits. Concurrent
+processes sharing one database need application-level coordination, not just
+these row locks.
+
+### Consistent restore, capacity and cleanup
+
+`WalkSenderState` streams parent snapshots, collection metadata, transactions and
+occurrences in one read-only repeatable-read transaction. Consumers stage their
+results and publish only after the entire method succeeds. On any error, discard
+the staged result; partially restored data is not a valid zero count. Callbacks
+must not write through the read transaction or retain unaccounted copies.
+
+Specify `SenderRestoreLimits` explicitly. Maximum values are 1,024 Pools, 4,096
+transactions, 65,536 events and 4,096 events per Pool. Queries read at most each
+global limit plus one; overflow returns `ErrSenderCapacity`, never silent
+truncation. Expired, canceled and abandoned rows awaiting cleanup count toward
+these bounds. Parent creation evidence and Activity observation compatibility
+must still be checked by the application before publishing metrics.
+
+`PruneSenders` deletes up to the supplied limit (maximum 1,000) from each table in
+one transaction, events first. A transaction's expiry is deletion eligibility,
+not permission to remove its remaining references: `ON DELETE RESTRICT` and the
+cleanup query retain referenced rows. `ReleaseSenderSnapshot` conditionally
+removes unchanged, childless metadata after invalid intervals leave the window;
+the caller must first stop collection for that Pool. Deleting the existing parent
+Pool cascades to its collection metadata and events, but not the shared result.
+
+For a live in-memory sender collection, call `PruneEventBatch` outside the sender
+lock, then call `PruneSnapshotBatch` and adopt its returned deletions under the
+same application lock used by admission and sender GC. Both methods accept a
+limit from 1 to 1,000 and execute only one batch. Set a context deadline for each
+operation. Snapshot identities are returned only after commit; remove their
+events, pending intake and lookup references together. An uncertain parent
+deletion error must not be treated as a confirmed empty result. A history-only
+failure does not invalidate sender evidence.
+
+MarketHub runs one batch per table per maintenance pass (normally once a minute),
+using a five-second history deadline and a one-second parent deletion deadline.
+Remaining rows wait for subsequent passes. `Prune` and `PruneWithDeletedSnapshots`
+retain their combined, maximum-100-batches-per-table behavior for compatibility.
+Do not wrap those entire combined methods in a live sender lock. The latter
+reports completed batches even when a later batch fails.
+
+Do not predict deletion from age alone, or retain cascaded children in the
+process-local row count. Shared transactions retain their own expiry and
+references from other Pools.
+
+When collection or restore is unavailable, include `Batch.SenderInvalidations`
+with the ordinary Activity commit for each updated parent. Each request contains
+the Pool, a half-open minute interval (`From`, `To`), and `UpdatedAt`. It expands
+the existing collection metadata's invalid range without needing a trusted copy
+of its generation. It never creates metadata for an unobserved Pool. Normal
+sender state/event writes for that same Pool cannot coexist with an invalidation.
+The invalidation rolls back with Activity and the source cursor. MarketHub marks
+the current minute and preceding 15 minutes, so a missed cancellation cannot
+reappear after restart; overlapping windows remain null until the interval ages
+out. Lookup work also stops at the outbound boundary while collection is disabled.
+
+The application reserves the agreed admission/queue/row/memory budgets, counts
+undeleted records, and schedules cleanup. These SQL APIs do not themselves enforce
+the process-wide 32 MiB budget or database-wide admission counts. Restores stream
+data so the caller can account for its memory without a second full copy. An
+InnoDB file need not shrink when expired rows are deleted.
+
+Apply the new tables before enabling sender readers/writers. Old batches with no
+sender fields keep their existing behavior and do not query the new tables. The
+embedded schema supports fresh or missing-table creation; it is not an upgrade
+mechanism for an incompatible table that already exists. MarketHub migration,
+public SDK types, runtime connection and UI work follow separately.
+
+Verification uses `GOWORK=off go test ./...` and `GOWORK=off go vet ./...` when the
+enclosing workspace does not list this nested module. The optional MySQL tests
+use the temporary-modfile/DSN setup described above; add `-tags=mysqlintegration
+-race -count=1 ./...`. They create and drop only uniquely named test databases.
+Coverage includes rollback, multiple prefixes, concurrent attempts, terminal
+protection, consistent reads during writes, restore overflow, generation reset,
+unknown-minute expiry and retention of shared referenced results. Regression
+tests additionally cover submicrosecond round trips, explicit canonical
+reacceptance, cancellation with late timestamps and corrections after GC.
+
+Validated on 2026-09-29: module tests, vet, build and all opt-in MySQL integration
+tests with `-race` passed against local Docker MySQL 8.4. Only disposable test
+databases were created and removed; application migrations were not applied.
