@@ -286,3 +286,126 @@ reacceptance, cancellation with late timestamps and corrections after GC.
 Validated on 2026-09-29: module tests, vet, build and all opt-in MySQL integration
 tests with `-race` passed against local Docker MySQL 8.4. Only disposable test
 databases were created and removed; application migrations were not applied.
+
+## Restartable LP checkpoints (2026-10-01)
+
+`onchain_amm_pool_new_pair_lp_checkpoints` holds one replaceable checkpoint per
+Pool, under the existing snapshot digest. It references the source cursor and
+records a creation-event digest, format version, observation position, JSON
+payload, byte count and revision. Parent deletion cascades to the checkpoint;
+source deletion is restricted while checkpoints reference it. Creation events
+are checked when saving/loading, without extending their archive retention by
+adding another foreign key.
+
+The application owns the payload format, LP calculations, supported protocols,
+decimals, tick limits and chain validation. A successful storage read is **not**
+permission to publish a synchronized LP. Preserve the complete-capture boundary,
+last applied event and deduplication evidence in the payload. `Position.Index ==
+nil` identifies a complete position; a non-nil value, including `"0"`, identifies
+the last applied event within that position. The application must verify that
+these relational coordinates agree with the payload and current Pool identity.
+
+`SaveLPCheckpoint` accepts one `LPCheckpointSaveParams`. It locks the source
+cursor, verifies `ExpectedCursorRevision`, locks the canonical parent and verifies
+`ExpectedParentRevision`, and checks the canonical `created` event's Pool/source.
+An existing checkpoint must belong to that same source and creation event. Reset
+the old checkpoint before changing its creation generation. Checkpoint writes
+increment the **source cursor revision**, preserving its history position. They
+do not rewrite the parent JSON or increment the parent's revision.
+
+The checkpoint ownership lookup is a nonlocking read, performed only after the
+source, parent and creation-event locks. It is the transaction's first consistent
+read, so it sees the state committed before those locks were acquired. Source
+serialization and the locked parent protect saves and resets without locking a
+missing checkpoint's index gap. This lets unrelated sources insert their first
+checkpoints concurrently. Capacity checks still use current locking reads under
+the source lock.
+
+Compose the store with the existing constructor. After the application has
+validated the LP state against a committed parent, save it using that parent's
+revision and the actor's current source revision:
+
+```go
+store, err := ammpool.NewStoreWithTablePrefix(db, "market_hub_")
+if err != nil {
+    return err
+}
+result, err := store.SaveLPCheckpoint(ctx, ammpool.LPCheckpointSaveParams{
+    Source:                 cursor.Source,
+    ExpectedCursorRevision: cursor.Revision,
+    ExpectedParentRevision: parent.Revision,
+    Checkpoint:             checkpoint,
+})
+if err != nil {
+    return err // Reconcile an uncertain commit before continuing the actor.
+}
+cursor = result.Cursor
+```
+
+The saved checkpoint's `revision` is the updated source revision. It does not
+reset to one after checkpoint deletion/recreation. Source cursors must remain
+durable while a source is in use; resetting them requires discarding the actor
+state and restoring it again. Parent price/Activity updates after the save do not
+invalidate a checkpoint merely because the parent's revision increased.
+
+`ListLPCheckpointMetadata` requires a source and a limit from 1 to 32. It reads
+only small columns, ordered by Pool digest. Pass `NextAfterID` as `AfterPoolID`
+for the next page; nil means the end. Expired and noncanonical parents are still
+visible for application-scheduled cleanup. The listing does not apply NewPair
+publication rules or return LP JSON.
+
+`LoadLPCheckpoints` accepts 1 to 32 unique Pool/revision references and uses one
+read-only repeatable-read transaction to select metadata and then JSON. Missing,
+changed, noncanonical or creation-evidence-less references are omitted. Metadata
+pages may change between calls; each load checks the exact selected revisions.
+On any database/validation/capacity error, the entire load result is discarded.
+Successful independent earlier loads may still be validated by the application.
+
+The limits are 512 KiB per payload, 512 Pool rows and 64 MiB per source, and 4 MiB
+per load. Source quotas include records awaiting cleanup and are enforced inside
+the save transaction, under the source lock. All checkpoint writers must use this
+API. `payload_bytes` is generated from the UTF-8 JSON text output by MySQL, the
+same representation returned by the reader. Input size is also checked, because
+JSON normalization may change the byte count. These are payload limits, not
+physical InnoDB, index or binlog size limits. Saved byte counts are returned to
+the caller; reserve the maximum size until the normalized size is known.
+
+`Batch.ResetLPCheckpoints` explicitly deletes up to 32 source-owned Pool rows
+inside normal `Commit`, without requiring another parent JSON write. Absent rows
+are a no-op; a row belonging to a different source is a conflict. `Commit` also
+automatically deletes checkpoints when a parent becomes noncanonical, their
+creation event is canceled, or another canonical creation event is adopted.
+An old creation cancellation does not remove a replacement checkpoint. Automatic
+deletions follow the existing batch's size and do not impose the explicit-reset
+limit on existing event batches. Corrections and deletion roll back together.
+
+`ErrCursorConflict`, `ErrLPCheckpointConflict` and `ErrLPCheckpointCapacity` remain
+inspectable with `errors.Is`. Database errors are wrapped, and the library emits
+no logs, retries or RPC. A commit error can mean the database committed but its
+acknowledgment was lost: no successful receipt is returned. Re-read the cursor
+and metadata and reconcile actor ownership before another write; do not merely
+adopt another writer's revision while retaining stale actor state.
+
+The application supplies save/recovery deadlines, write frequency and byte
+budgets, retention cleanup, and fallback to full LP capture. **Apply the new
+table before upgrading writers:** canonical creation events and cancellation
+batches use it even before the application begins saving checkpoints. Old normal
+snapshot/Activity updates that require no reset do not read or write this table.
+Existing List/Get queries never join checkpoint payloads.
+
+The optional `TestMySQLLPCheckpoint*` tests use only the isolated test databases
+described above. They cover exact large integers, partial-block cursors, parent
+and history preservation, revision replacement, rollback of cancellations,
+creation generation changes, source/prefix isolation, row/byte capacity races,
+JSON normalization, read snapshot consistency and lost commit acknowledgments.
+The independent-source test coordinates both ownership reads before either
+INSERT, checks that both saves commit, and verifies source isolation and revisions.
+It reproduced MySQL deadlock 1213 before the ownership-read fix and passed three
+consecutive runs with `-race` after the fix; the full integration suite also passed.
+
+Validated on 2026-10-01: module tests, vet and build passed. All opt-in MySQL
+integration tests passed with `-race` against a disposable MySQL 8.4 container;
+the additional direct CHECK/FK constraint test also passed with `-race`. No
+running application database or service migration was changed. The MySQL driver
+was supplied only through a temporary test modfile; production dependencies did
+not change. MarketHub connection, rollout and Agent E2E remain the next stage.

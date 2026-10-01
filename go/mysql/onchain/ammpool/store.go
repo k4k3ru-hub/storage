@@ -38,6 +38,7 @@ func NewStore(db *sql.DB) (*Store, error) {
 //   - 2026-09-18: Persist NewPair confirmation and abandonment state.
 //   - 2026-09-27: Include atomic activity minute persistence.
 //   - 2026-09-28: Include sender tables and generated constraint name bounds.
+//   - 2026-10-01: Compose LP checkpoint tables and bound their constraint names.
 func NewStoreWithTablePrefix(db *sql.DB, prefix string) (*Store, error) {
 	if db == nil {
 		return nil, fmt.Errorf("failed to create amm pool store: database=null")
@@ -45,13 +46,13 @@ func NewStoreWithTablePrefix(db *sql.DB, prefix string) (*Store, error) {
 	if prefix != "" && !regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`).MatchString(prefix) {
 		return nil, fmt.Errorf("failed to create amm pool store: table_prefix=invalid")
 	}
-	names := []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes", "onchain_amm_pool_new_pair_sender_snapshots", "onchain_amm_pool_new_pair_sender_transactions", "onchain_amm_pool_new_pair_sender_events"}
+	names := []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes", "onchain_amm_pool_new_pair_sender_snapshots", "onchain_amm_pool_new_pair_sender_transactions", "onchain_amm_pool_new_pair_sender_events", "onchain_amm_pool_new_pair_lp_checkpoints"}
 	replacements := make([]string, 0, len(names)*2)
 	for _, name := range names {
 		if len(prefix)+len(name) > 64 {
 			return nil, fmt.Errorf("failed to create amm pool store: table_name=too_long max_length=64")
 		}
-		if strings.Contains(name, "_sender_") && len(prefix)+len(name)+len("_ibfk_1") > 64 {
+		if (strings.Contains(name, "_sender_") || strings.HasSuffix(name, "_lp_checkpoints")) && len(prefix)+len(name)+len("_ibfk_1") > 64 {
 			return nil, fmt.Errorf("failed to create amm pool store: constraint_name=too_long max_length=64")
 		}
 		replacements = append(replacements, name, "`"+prefix+name+"`")
@@ -69,6 +70,7 @@ func (s *Store) query(query string) string { return s.tableNames.Replace(query) 
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 //   - 2026-09-27: Include atomic activity minute persistence.
 //   - 2026-09-28: Include short-lived sender persistence.
+//   - 2026-10-01: Include LP checkpoint persistence.
 func (s *Store) Schema() string { return s.query(schema) }
 
 // Schema returns the version-one DDL for application migrations.
@@ -79,6 +81,7 @@ func (s *Store) Schema() string { return s.query(schema) }
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 //   - 2026-09-27: Include atomic activity minute persistence.
 //   - 2026-09-28: Include short-lived sender persistence.
+//   - 2026-10-01: Include LP checkpoint persistence.
 func Schema() string { return schema }
 
 // CreateTables applies initial DDL when explicitly called by a migration runner.
@@ -89,6 +92,7 @@ func Schema() string { return schema }
 //   - 2026-09-19: Expose the observed swap and liquidity evaluation schema.
 //   - 2026-09-27: Include atomic activity minute persistence.
 //   - 2026-09-28: Include short-lived sender persistence.
+//   - 2026-10-01: Include LP checkpoint persistence.
 func (s *Store) CreateTables(ctx context.Context) error {
 	for _, statement := range strings.Split(schema, ";") {
 		if strings.TrimSpace(statement) == "" {
@@ -136,6 +140,7 @@ func (s *Store) Cursor(ctx context.Context, source Source) (Cursor, error) {
 //   - 2026-09-29: Normalize event times to microseconds and distinguish sender write intents.
 //   - 2026-09-29: Verify dedicated sender evidence in the same transaction without archiving it.
 //   - 2026-09-29: Persist sender invalidations atomically even when collection is unavailable.
+//   - 2026-10-01: Delete LP checkpoints with explicit resets and creation corrections.
 func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 	if err = b.Validate(); err != nil {
 		return fmt.Errorf("failed to commit amm pool batch: %w", err)
@@ -188,6 +193,9 @@ func (s *Store) Commit(ctx context.Context, b Batch) (err error) {
 		if err != nil {
 			return fmt.Errorf("failed to save amm pool event: %w", err)
 		}
+	}
+	if err := s.commitLPCheckpointResets(ctx, tx, b); err != nil {
+		return fmt.Errorf("failed to commit amm pool batch: %w", err)
 	}
 	if err := s.commitActivity(ctx, tx, b); err != nil {
 		return err

@@ -13,6 +13,7 @@ import (
 //   - 2026-09-18: Verify NewPair-specific table names.
 //   - 2026-09-27: Include the activity minute table.
 //   - 2026-09-28: Include sender tables and generated constraint bounds.
+//   - 2026-10-01: Verify LP checkpoint composition and prefix replacement.
 func TestTablePrefix(t *testing.T) {
 	db := new(sql.DB)
 	prefixed, err := NewStoreWithTablePrefix(db, "market_hub_")
@@ -23,7 +24,7 @@ func TestTablePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes", "onchain_amm_pool_new_pair_sender_snapshots", "onchain_amm_pool_new_pair_sender_transactions", "onchain_amm_pool_new_pair_sender_events"} {
+	for _, name := range []string{"onchain_amm_pool_new_pair_snapshots", "onchain_amm_pool_new_pair_events", "onchain_amm_pool_new_pair_sync_cursors", "onchain_amm_pool_new_pair_activity_minutes", "onchain_amm_pool_new_pair_sender_snapshots", "onchain_amm_pool_new_pair_sender_transactions", "onchain_amm_pool_new_pair_sender_events", "onchain_amm_pool_new_pair_lp_checkpoints"} {
 		if !strings.Contains(prefixed.Schema(), "`market_hub_"+name+"`") {
 			t.Fatal("configured DDL omitted table", name)
 		}

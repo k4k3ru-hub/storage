@@ -75,6 +75,7 @@ type Batch struct {
 	Events               []Event
 	ActivityMinutes      []ActivityMinute
 	ResetActivity        []Identity
+	ResetLPCheckpoints   []Identity
 	SenderSnapshots      []SenderSnapshot
 	SenderTransactions   []SenderTransaction
 	SenderEvents         []SenderEvent
@@ -161,6 +162,7 @@ func (s Source) Validate() error {
 //   - 2026-09-28: Validate atomic sender collection updates.
 //   - 2026-09-29: Require explicit sender admission and canonical reacceptance intents.
 //   - 2026-09-29: Validate transient sender evidence without requiring archival storage.
+//   - 2026-10-01: Validate bounded source-scoped LP checkpoint resets.
 func (b Batch) Validate() error {
 	if err := b.Cursor.Source.Validate(); err != nil {
 		return fmt.Errorf("failed to validate amm pool batch: %w", err)
@@ -197,6 +199,9 @@ func (b Batch) Validate() error {
 		}
 	}
 	if err := b.validateActivity(); err != nil {
+		return err
+	}
+	if err := b.validateLPCheckpointResets(); err != nil {
 		return err
 	}
 	return b.validateSenders()

@@ -146,3 +146,35 @@ CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_sender_events (
     CHECK (direction IN (0, 1, 2)),
     CHECK (is_canonical IN (0, 1))
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS onchain_amm_pool_new_pair_lp_checkpoints (
+    pool_id BINARY(32) NOT NULL,
+    source_id BINARY(32) NOT NULL,
+    creation_event_id BINARY(32) NOT NULL,
+    format_version SMALLINT UNSIGNED NOT NULL,
+    position_kind VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    position_number BIGINT UNSIGNED NOT NULL,
+    position_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    event_index VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    payload JSON NOT NULL,
+    payload_bytes INT UNSIGNED GENERATED ALWAYS AS (
+        OCTET_LENGTH(CAST(payload AS CHAR CHARACTER SET utf8mb4))
+    ) STORED,
+    revision BIGINT UNSIGNED NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (pool_id),
+    KEY idx_lp_checkpoint_source (source_id, pool_id, payload_bytes),
+    FOREIGN KEY (pool_id)
+        REFERENCES onchain_amm_pool_new_pair_snapshots(id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (source_id)
+        REFERENCES onchain_amm_pool_new_pair_sync_cursors(id)
+        ON DELETE RESTRICT,
+    CHECK (format_version > 0),
+    CHECK (CHAR_LENGTH(position_kind) > 0),
+    CHECK (CHAR_LENGTH(position_id) > 0),
+    CHECK (event_index IS NULL OR CHAR_LENGTH(event_index) > 0),
+    CHECK (JSON_TYPE(payload) = 'OBJECT'),
+    CHECK (payload_bytes BETWEEN 2 AND 524288),
+    CHECK (revision > 0)
+) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4;
