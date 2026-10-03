@@ -1,13 +1,25 @@
 package ammpool
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
+
+const pruneSnapshotCandidatesSQL = `SELECT id,chain_family,chain,network,venue,pool_id,pool_created_at
+ FROM onchain_amm_pool_new_pair_snapshots WHERE is_canonical=? AND pool_created_at<?
+ ORDER BY pool_created_at,id LIMIT ? FOR UPDATE`
+
+type pruneSnapshotCandidate struct {
+	id        []byte
+	identity  Identity
+	createdAt time.Time
+}
 
 // PruneWithDeletedSnapshots prunes history and reports each committed snapshot deletion batch.
 // The callback receives at most 1,000 identities, without JSON or child data. It runs after
@@ -66,11 +78,13 @@ func (s *Store) PruneEventBatch(ctx context.Context, before time.Time, limit int
 }
 
 // PruneSnapshotBatch deletes at most limit expired parents and returns only committed identities.
+// It locks up to limit candidates in each canonical range and deletes the oldest combined limit.
 // Callers must synchronize the deletion and adoption together with sender commits and GC.
 // A commit error may leave the outcome uncertain; no identities are returned on error.
 //
 // Version:
 //   - 2026-09-29: Added.
+//   - 2026-10-03: Use indexed canonical ranges and order the combined candidates by age and ID.
 func (s *Store) PruneSnapshotBatch(ctx context.Context, before time.Time, limit int) (out []Identity, err error) {
 	if before.IsZero() || limit < 1 || limit > 1000 {
 		return nil, fmt.Errorf("failed to prune amm pool snapshots: bounds=out_of_range")
@@ -84,32 +98,27 @@ func (s *Store) PruneSnapshotBatch(ctx context.Context, before time.Time, limit 
 			err = errors.Join(err, fmt.Errorf("failed to roll back snapshot pruning: %w", e))
 		}
 	}()
-	rows, err := tx.QueryContext(ctx, s.query(`SELECT id,chain_family,chain,network,venue,pool_id
- FROM onchain_amm_pool_new_pair_snapshots WHERE pool_created_at<? LIMIT ? FOR UPDATE`), before.UTC(), limit)
-	if err != nil {
-		return nil, fmt.Errorf("failed to lock expired snapshots: %w", err)
+	var candidates []pruneSnapshotCandidate
+	for _, canonical := range []bool{false, true} {
+		group, err := s.lockPruneSnapshotCandidates(ctx, tx, canonical, before, limit)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, group...)
+	}
+	slices.SortFunc(candidates, func(a, b pruneSnapshotCandidate) int {
+		if order := a.createdAt.Compare(b.createdAt); order != 0 {
+			return order
+		}
+		return bytes.Compare(a.id, b.id)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
 	}
 	var keys []any
-	readErr := func() error {
-		for rows.Next() {
-			var id []byte
-			var p Identity
-			if err := rows.Scan(&id, &p.ChainFamily, &p.Chain, &p.Network, &p.Venue, &p.PoolID); err != nil {
-				return fmt.Errorf("failed to read expired snapshot: %w", err)
-			}
-			out = append(out, p)
-			keys = append(keys, id)
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("failed to read expired snapshots: %w", err)
-		}
-		return nil
-	}()
-	if closeErr := rows.Close(); closeErr != nil {
-		readErr = errors.Join(readErr, fmt.Errorf("failed to close expired snapshots: %w", closeErr))
-	}
-	if readErr != nil {
-		return nil, readErr
+	for _, candidate := range candidates {
+		out = append(out, candidate.identity)
+		keys = append(keys, candidate.id)
 	}
 	if len(keys) > 0 {
 		query := "DELETE FROM onchain_amm_pool_new_pair_snapshots WHERE id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + ")"
@@ -127,6 +136,30 @@ func (s *Store) PruneSnapshotBatch(ctx context.Context, before time.Time, limit 
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit snapshot pruning: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) lockPruneSnapshotCandidates(ctx context.Context, tx *sql.Tx, canonical bool, before time.Time, limit int) (out []pruneSnapshotCandidate, err error) {
+	rows, err := tx.QueryContext(ctx, s.query(pruneSnapshotCandidatesSQL), canonical, before.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock expired snapshots: %w: is_canonical=%t", err, canonical)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to close expired snapshots: %w", closeErr))
+		}
+	}()
+	for rows.Next() {
+		var candidate pruneSnapshotCandidate
+		p := &candidate.identity
+		if err := rows.Scan(&candidate.id, &p.ChainFamily, &p.Chain, &p.Network, &p.Venue, &p.PoolID, &candidate.createdAt); err != nil {
+			return nil, fmt.Errorf("failed to read expired snapshot: %w", err)
+		}
+		out = append(out, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read expired snapshots: %w", err)
 	}
 	return out, nil
 }

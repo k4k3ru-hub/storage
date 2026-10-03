@@ -239,8 +239,17 @@ events, pending intake and lookup references together. An uncertain parent
 deletion error must not be treated as a confirmed empty result. A history-only
 failure does not invalidate sender evidence.
 
+`PruneSnapshotBatch` reads each canonical range through the existing
+`(is_canonical, pool_created_at, id)` index, collecting up to `limit` candidates
+per range. It combines at most `2 * limit` candidates and deletes the oldest
+`limit` by creation time and binary ID in one transaction. Both ranges use the
+same cutoff and context deadline; a failed query or commit returns no deleted
+identities. The cutoff itself is retained. Candidate counts do not bound all
+InnoDB range or cascade locks.
+
 MarketHub runs one batch per table per maintenance pass (normally once a minute),
-using a five-second history deadline and a one-second parent deletion deadline.
+using up to 1,000 history rows with a five-second deadline and up to 64 parent
+Pools with a one-second deadline covering both range reads, deletion and commit.
 Remaining rows wait for subsequent passes. `Prune` and `PruneWithDeletedSnapshots`
 retain their combined, maximum-100-batches-per-table behavior for compatibility.
 Do not wrap those entire combined methods in a live sender lock. The latter
