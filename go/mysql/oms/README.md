@@ -293,3 +293,21 @@ history. Usable signatures and prepared tokens must never enter protocol facts.
 The venue adapter verifies scope, accounting units and completeness proofs.
 TradeHub owns the separate dispatch/reconciliation table and network worker.
 Perpetual notional is excluded from the existing spot PnL calculation.
+
+## Perpetual Venue口座の再開snapshot
+
+`PerpetualVenueAccountSnapshotStore`は`oms_perpetual_venue_account_snapshots`だけを扱う独立した保存部品。
+`NewPerpetualVenueAccountSnapshotStore(tableName)`で構成し、`Select`と`Save`に呼出元のDB／transactionを渡す。
+TradeHubの実テーブルは`trade_hub_oms_perpetual_venue_account_snapshots`。DDLは
+`schema.perpetual_venue_account_snapshots.sql`で、TradeHub migration 001と同じ構造。
+
+- 主キーはaccount・venue・network・trading_account。adapterで正規化し、別テナントや環境を混ぜない。
+- 注文参照を必須にしない。手動約定を含むVenue口座の監視再開に使用し、数量・平均建値・PnLの原本はVenue。
+- `Save(..., expectedRevision=0, ...)`は初回INSERT。それ以外はrevision一致かつ取得末尾が後退しない場合だけ更新。
+  競合は`ErrConflict`。最新revisionへ付け替えて再送せず、状態を再読込して照合する。
+- `observed_through_ms`と`snapshot`は同一transactionで保存し、commit完了前に計算結果を公開しない。
+- JSON objectは最大8 MiB。内部の数量・手数料・時刻・versionの検証はproducerの責務。
+  不明値を0にせず、按分手数料は分数などの正確な再開形式で保持する。
+- `CreateTable`は明示的migration／隔離テスト専用。Store構築や読取ではschemaを変更しない。
+
+`K4K3RU_OMS_TEST_DSN`を隔離MySQLへ向けると、tenant分離・競合・時刻後退・rollback・再読込を実DBで検証する。
