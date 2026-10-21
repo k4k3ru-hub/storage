@@ -218,7 +218,7 @@ func validatePerpetualChildren(r PerpetualEvent, history []PerpetualEvent) error
 		}
 	}
 	for _, fee := range r.Fees {
-		if fee.AssetNamespace != "venue" || fee.FeeType != "trading" || fee.AccountingTreatment != "additional" {
+		if fee.AssetNamespace != "venue" || (fee.FeeType != "trading" && fee.FeeType != "gas") || fee.AccountingTreatment != "additional" {
 			return invalid("fee_scope", "invalid")
 		}
 	}

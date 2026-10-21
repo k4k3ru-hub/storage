@@ -28,6 +28,16 @@ func newBatchReader[T, R any](
 	size int64,
 	convert func(R) T,
 ) (dataset.BatchReader[T], error) {
+	return newBatchReaderWithSchemaFingerprint(ctx, source, size, convert, nil)
+}
+
+func newBatchReaderWithSchemaFingerprint[T, R any](
+	ctx context.Context,
+	source dataset.ReadSource,
+	size int64,
+	convert func(R) T,
+	schemaFingerprint func(*parquetgo.Schema) string,
+) (dataset.BatchReader[T], error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("failed to create parquet batch reader: context=null")
 	}
@@ -45,12 +55,16 @@ func newBatchReader[T, R any](
 	if err != nil {
 		return nil, fmt.Errorf("failed to create parquet batch reader: %w", err)
 	}
+	schemaID := fingerprint(file.Schema().String())
+	if schemaFingerprint != nil {
+		schemaID = schemaFingerprint(file.Schema())
+	}
 	return &batchReader[T, R]{
 		reader:  parquetgo.NewGenericReader[R](file),
 		convert: convert,
 		info: dataset.CompactionFileInfo{
 			NumRows:                file.NumRows(),
-			SchemaFingerprint:      fingerprint(file.Schema().String()),
+			SchemaFingerprint:      schemaID,
 			CompressionFingerprint: compressionFingerprint(file),
 		},
 	}, nil

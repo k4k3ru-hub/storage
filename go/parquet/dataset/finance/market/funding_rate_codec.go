@@ -8,13 +8,14 @@ import (
 	"github.com/k4k3ru-hub/storage/go/parquet/dataset"
 	parquetgo "github.com/parquet-go/parquet-go"
 	"io"
+	"time"
 )
 
 type FundingRateCodec struct{}
 type fundingRateRow struct {
 	EventTimestamp    int64    `parquet:"event_timestamp,timestamp(microsecond)"`
 	ReceivedTimestamp int64    `parquet:"received_timestamp,timestamp(microsecond)"`
-	FundingTimestamp  int64    `parquet:"funding_timestamp,timestamp(microsecond)"`
+	FundingTimestamp  *int64   `parquet:"funding_timestamp,optional,timestamp(microsecond)"`
 	Rate              float64  `parquet:"rate"`
 	Kind              string   `parquet:"kind"`
 	IntervalMinutes   int32    `parquet:"interval_minutes"`
@@ -26,6 +27,7 @@ type fundingRateRow struct {
 // NewFundingRateCodec creates a FundingRate Parquet codec.
 //
 // Version:
+//   - 2026-10-22: Preserve absent funding times as null and read legacy required timestamps.
 //   - 2026-08-16: Added.
 //   - 2026-08-19: Distinguished rate kinds and funding intervals.
 func NewFundingRateCodec() *FundingRateCodec { return &FundingRateCodec{} }
@@ -41,10 +43,11 @@ func NewFundingRateCodec() *FundingRateCodec { return &FundingRateCodec{} }
 //   - FundingRate batch reader.
 //
 // Version:
+//   - 2026-10-22: Preserve absent funding times as null and read legacy required timestamps.
 //   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-18: Added.
 func (*FundingRateCodec) NewBatchReader(ctx context.Context, source dataset.ReadSource, size int64) (dataset.BatchReader[FundingRate], error) {
-	return newBatchReader(ctx, source, size, fundingRateFromRow)
+	return newBatchReaderWithSchemaFingerprint(ctx, source, size, fundingRateFromRow, fundingRateSchemaFingerprint)
 }
 
 // NewBatchWriter creates a bounded FundingRate Parquet writer.
@@ -57,6 +60,7 @@ func (*FundingRateCodec) NewBatchReader(ctx context.Context, source dataset.Read
 //   - FundingRate batch writer.
 //
 // Version:
+//   - 2026-10-22: Preserve absent funding times as null and read legacy required timestamps.
 //   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-18: Added.
 func (*FundingRateCodec) NewBatchWriter(ctx context.Context, destination io.Writer) (dataset.BatchWriter[FundingRate], error) {
@@ -66,6 +70,7 @@ func (*FundingRateCodec) NewBatchWriter(ctx context.Context, destination io.Writ
 // Encode encodes FundingRate records as Apache Parquet.
 //
 // Version:
+//   - 2026-10-22: Preserve absent funding times as null and read legacy required timestamps.
 //   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-16: Added.
 func (*FundingRateCodec) Encode(ctx context.Context, destination io.Writer, records []FundingRate) error {
@@ -90,6 +95,7 @@ func (*FundingRateCodec) Encode(ctx context.Context, destination io.Writer, reco
 // Decode decodes Apache Parquet into FundingRate records.
 //
 // Version:
+//   - 2026-10-22: Preserve absent funding times as null and read legacy required timestamps.
 //   - 2026-08-19: Added funding kind, interval, and optional market context.
 //   - 2026-08-16: Added.
 func (*FundingRateCodec) Decode(ctx context.Context, source dataset.ReadSource, size int64) ([]FundingRate, error) {
@@ -125,10 +131,15 @@ func (*FundingRateCodec) Decode(ctx context.Context, source dataset.ReadSource, 
 }
 
 func fundingRateToRow(record FundingRate) fundingRateRow {
+	var fundingTimestamp *int64
+	if !record.FundingTimestamp.IsZero() {
+		value := record.FundingTimestamp.UnixMicro()
+		fundingTimestamp = &value
+	}
 	return fundingRateRow{
 		EventTimestamp:    record.EventTimestamp.UnixMicro(),
 		ReceivedTimestamp: record.ReceivedTimestamp.UnixMicro(),
-		FundingTimestamp:  record.FundingTimestamp.UnixMicro(),
+		FundingTimestamp:  fundingTimestamp,
 		Rate:              record.Rate,
 		Kind:              string(record.Kind),
 		IntervalMinutes:   record.IntervalMinutes,
@@ -139,10 +150,14 @@ func fundingRateToRow(record FundingRate) fundingRateRow {
 }
 
 func fundingRateFromRow(row fundingRateRow) FundingRate {
+	var fundingTimestamp time.Time
+	if row.FundingTimestamp != nil {
+		fundingTimestamp = timeFromUnixMicro(*row.FundingTimestamp)
+	}
 	return FundingRate{
 		EventTimestamp:    timeFromUnixMicro(row.EventTimestamp),
 		ReceivedTimestamp: timeFromUnixMicro(row.ReceivedTimestamp),
-		FundingTimestamp:  timeFromUnixMicro(row.FundingTimestamp),
+		FundingTimestamp:  fundingTimestamp,
 		Rate:              row.Rate,
 		Kind:              FundingRateKind(row.Kind),
 		IntervalMinutes:   row.IntervalMinutes,
@@ -150,4 +165,26 @@ func fundingRateFromRow(row fundingRateRow) FundingRate {
 		IndexPrice:        row.IndexPrice,
 		PremiumRate:       row.PremiumRate,
 	}
+}
+
+// Only the approved required-to-optional funding time change is compatible.
+// Keep type, logical unit, field set and all other nullability checks intact.
+func fundingRateSchemaFingerprint(schema *parquetgo.Schema) string {
+	actual, expected := parquetgo.Group{}, parquetgo.Group{}
+	for _, field := range schema.Fields() {
+		var node parquetgo.Node = field
+		if field.Name() == "funding_timestamp" && field.Required() {
+			node = parquetgo.Optional(field)
+		}
+		actual[field.Name()] = node
+	}
+	for _, field := range parquetgo.SchemaOf(new(fundingRateRow)).Fields() {
+		expected[field.Name()] = field
+	}
+	normalized := parquetgo.NewSchema("funding_rate", actual).String()
+	target := parquetgo.NewSchema("funding_rate", expected).String()
+	if normalized == target {
+		return fingerprint(target)
+	}
+	return fingerprint(schema.String())
 }

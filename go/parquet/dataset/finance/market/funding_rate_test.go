@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// TestFundingRateValidate checks required values for current and settled observations.
+//
+// Version:
+//   - 2026-10-22: Keep non-current funding times mandatory.
 func TestFundingRateValidate(t *testing.T) {
 	event := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	valid := FundingRate{
@@ -24,7 +28,7 @@ func TestFundingRateValidate(t *testing.T) {
 		{name: "valid", mutate: func(*FundingRate) {}},
 		{name: "missing event timestamp", mutate: func(r *FundingRate) { r.EventTimestamp = time.Time{} }},
 		{name: "missing received timestamp", mutate: func(r *FundingRate) { r.ReceivedTimestamp = time.Time{} }},
-		{name: "missing funding timestamp", mutate: func(r *FundingRate) { r.FundingTimestamp = time.Time{} }},
+		{name: "missing funding timestamp", mutate: func(r *FundingRate) { r.Kind = FundingRateKindSettled; r.FundingTimestamp = time.Time{} }},
 		{name: "invalid rate", mutate: func(r *FundingRate) { r.Rate = math.NaN() }},
 		{name: "invalid kind", mutate: func(r *FundingRate) { r.Kind = "unknown" }},
 		{name: "invalid interval", mutate: func(r *FundingRate) { r.IntervalMinutes = 0 }},

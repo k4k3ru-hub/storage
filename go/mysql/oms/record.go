@@ -202,7 +202,7 @@ func validateChildren(r OnchainEvent, history []OnchainEvent) error {
 		if e.EventType == EventTypeFeesRecorded || e.EventType == EventTypeFeesAdjusted {
 			owner = records[*e.ReferenceEventID].Event
 		}
-		if f.FeeType == "gas" && !isResult(owner.EventType) {
+		if f.FeeType == "gas" && !isResult(owner.EventType) && !(root.Onchain == nil && isFill(owner.EventType) && f.AssetNamespace == "venue") {
 			return conflict("fee_parent")
 		}
 		if f.FeeType == "gas" && root.Onchain != nil {

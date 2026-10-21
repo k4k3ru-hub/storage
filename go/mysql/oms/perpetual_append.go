@@ -12,6 +12,7 @@ import (
 // No RPC or network operation may be performed while holding this transaction.
 //
 // Version:
+//   - 2026-10-14: Accept venue gas fees on offchain perpetual fills.
 //   - 2026-09-29: Add atomic Perpetual history, fees and snapshot projection.
 func (s *Store) AppendPerpetualEvent(ctx context.Context, tx *sql.Tx, accountID uint64, record PerpetualEvent) (*AppendResult, error) {
 	const op = "failed to append oms perpetual event"
