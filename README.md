@@ -43,3 +43,10 @@ preserving timestamp values, nulls, compression checks, and other schema checks.
 Existing files do not need rewriting. Upgrade all Funding readers/compactors
 before writing null targets: older clients do not understand their semantics.
 Go field types and dataset paths are unchanged.
+
+## Go toolchain
+
+Development and verification of the Go modules use Go 1.27.3. Their minimum Go
+versions are unchanged. Each module selects its development toolchain in
+`go.mod`; applications using these modules must select their own patched Go
+toolchain and rebuild to receive TLS security fixes.

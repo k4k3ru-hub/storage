@@ -2,6 +2,8 @@ module github.com/k4k3ru-hub/storage/go/mysql/account/api
 
 go 1.26.3
 
+toolchain go1.27.3
+
 require (
  github.com/DATA-DOG/go-sqlmock v1.5.2
  github.com/go-sql-driver/mysql v1.10.0

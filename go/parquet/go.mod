@@ -2,6 +2,8 @@ module github.com/k4k3ru-hub/storage/go/parquet
 
 go 1.26.3
 
+toolchain go1.27.3
+
 require github.com/parquet-go/parquet-go v0.32.0
 
 require (
