@@ -1,9 +1,16 @@
 # News persistence
 
-2026-10-31時点で、レビュー済みDDLに対応するGoモジュール・Store・単体テストと、
+以下の段落は2026-10-31のstorage単体実装時点の記録である。
+レビュー済みDDLに対応するGoモジュール・Store・単体テストと、
 隔離MySQL 8.4用の統合テストを実装した。[schema.sql](schema.sql)が `Schema()` の入力であり、
 [レビュー時のDDL案](schema.proposed.sql)は変更せず保存している。両者のDDL本文の一致をテストする。
 MarketHub・SDKへの接続、アプリのマイグレーション、本番DB適用・デプロイは未実施。
+
+2026-11-01追記：[収集間隔のDB管理設計](COLLECTION_SCHEDULE.md)と
+[レビュー時の追加DDL](collection-schedule.proposed.sql)の承認後、独立した
+`ScheduleSchema()` と設定・待機期限・履歴の保存APIを実装した。
+既存の `Schema()`・`schema.sql`・`schema.proposed.sql` は変更していない。
+今回のschedule追加分のstorage公開とMarketHubの正式な依存固定、本番適用は未実施。
 
 ## 目的と責務
 
@@ -314,6 +321,35 @@ func persistFetchedNews(ctx context.Context, db *sql.DB, store *news.Store,
 実際の取得では開始を記録してからTx外で外部取得・解析を行い、completionを組み立てる。
 記事は `NewRevision(identity, Record{Version: 1, Title: "...", URL: "https://example.org/news"})` で作成し、
 `FetchCompletion.Items` にidentityとsource item key付きで渡す。
+
+## 収集間隔の保存契約
+
+[collection-schedule.sql](collection-schedule.sql) は `ScheduleSchema()` 専用の追加DDLで、
+`news_source_schedules` の1テーブルだけを返す。元スキーマの後に利用アプリが明示的に適用する。
+prefixは元スキーマと同じで、設定seed・HTTP取得・due計算・定期起動は利用アプリが所有する。
+
+| API | 契約 |
+| --- | --- |
+| `GetSchedule` | 設定・待機期限・版・更新時刻を読む。不存在は `ErrNotFound` |
+| `ConfigureSchedule` | 間隔60〜604,800秒、自動取得有効状態を期待版CASで更新。初回は期待版0・保存版1。古い版は同一値でも競合 |
+| `LockSchedule` | caller-owned Tx内でsource→scheduleを行ロック。履歴をロックする前に呼ぶ |
+| `LockFetchHistory` | 同じTx内でrunning全体の確認と直近3試行をlocking read。順序は `started_at DESC,run_id DESC` |
+| `ExtendRetryNotBefore` | source→schedule順でロックし、現在と指定期限の遅い方を保持。設定版は進めない |
+
+設定更新は `retry_not_before_at` を変更せず、期限延長は `settings_version` を変更しない。
+更新時刻は呼出側が渡し、既存の更新時刻より古い操作を拒否する。設定CASの再送で古い版を
+繰り返さない。Commitが不明なら新しい読取りで保存版・内容・期限を確認する。
+
+開始はsource承認確認→`LockSchedule`→`LockFetchHistory`→利用アプリのdue再判定→
+`BeginFetch`を同じ短いTxで行う。Commit確定後にTx外でHTTPを行う。
+待機期限を伴う失敗は `ExtendRetryNotBefore` と `FailFetch` を同じTxに保存する。
+どの書込みエラーでもTx全体をRollbackする。既存の低水準APIは保持し、時間だけでrunningを奪取しない。
+
+2026-11-01の追加検証では、承認済みDDLとの一致、範囲境界、CAS競合、期限保持、
+古いrepeatable-read snapshot後のcurrent read、失敗と期限の同時rollback、DB制約を
+使い捨てloopback MySQL 8.4.13で確認した。MySQL全7テストと非DB全race・vetは成功。
+その後に追加した同時設定CASのDB再確認はtool中断で結果未取得であり、合格証拠に含めない。
+接続・データはこのテスト専用で、本番や実ニュースを使っていない。
 
 ## ローカル検証
 

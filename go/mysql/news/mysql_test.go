@@ -74,7 +74,7 @@ func mysqlFixture(t *testing.T) (*Store, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		for _, name := range []string{"article_entities", "article_categories", "annotation_sets", "categories", "fetch_run_items", "article_revisions", "articles", "fetch_runs", "sources", "publishers"} {
+		for _, name := range []string{"source_schedules", "article_entities", "article_categories", "annotation_sets", "categories", "fetch_run_items", "article_revisions", "articles", "fetch_runs", "sources", "publishers"} {
 			if _, err := db.ExecContext(context.Background(), "DROP TABLE IF EXISTS "+s.table(name)); err != nil {
 				t.Error(err)
 			}
