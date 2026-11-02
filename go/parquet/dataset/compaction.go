@@ -67,6 +67,7 @@ type compactionOutput struct {
 // fails, outputs are retained to avoid data loss.
 //
 // Version:
+//   - 2026-11-02: Publish optional output provenance before deleting inputs.
 //   - 2026-09-23: Honor dataset policies that exclude reserved mutable objects.
 //   - 2026-08-18: Added.
 func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result CompactResult, err error) {
@@ -100,7 +101,10 @@ func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result 
 		return result, fmt.Errorf("%s: %w", operationErr, err)
 	}
 	if len(objects) < 2 {
-		return CompactResult{}, nil
+		single, ok := d.compactionPolicy.(interface{ CompactSingleObject() bool })
+		if len(objects) == 0 || !ok || !single.CompactSingleObject() {
+			return CompactResult{}, nil
+		}
 	}
 
 	codec, ok := d.codec.(CompactionCodec[T])
@@ -181,6 +185,13 @@ func (d *Dataset[T]) Compact(ctx context.Context, params CompactParams) (result 
 		return result, errors.Join(fmt.Errorf("%s: failed to clean up temporary outputs: %w", operationErr, err), rollbackErr)
 	}
 	temporaryCleaned = true
+	if d.beforeCompactionInputDeletion != nil {
+		publication := CompactResult{Compacted: true, InputFiles: inputKeys(inputs), OutputFiles: finalKeys(outputs), InputRows: inputRows, OutputRows: outputRows, DeduplicatedRows: deduplicatedRows, NumRows: outputRows, InputBytes: inputBytes, OutputBytes: publishedBytes}
+		if hookErr := d.beforeCompactionInputDeletion(ctx, publication); hookErr != nil {
+			rollbackErr := deleteAllCompactionObjects(context.WithoutCancel(ctx), deleter, published)
+			return result, errors.Join(fmt.Errorf("failed to compact dataset: failed to publish output provenance: %w", hookErr), rollbackErr)
+		}
+	}
 
 	if err := deleteCompactionObjects(ctx, deleter, inputKeys(inputs)); err != nil {
 		return result, fmt.Errorf("%s: failed to delete input objects: %w", operationErr, err)

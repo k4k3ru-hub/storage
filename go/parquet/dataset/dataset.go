@@ -49,6 +49,9 @@ type Params struct {
 	PartitionColumns []string
 	FileName         string
 	WriteMode        WriteMode
+	// BeforeCompactionInputDeletion publishes optional output provenance after
+	// validation and before any input is deleted. Failure rolls back outputs.
+	BeforeCompactionInputDeletion func(context.Context, CompactResult) error
 }
 
 // CompactionPolicy defines record ordering and equality for compaction.
@@ -83,15 +86,16 @@ type ReadResult[T any] struct {
 }
 
 type Dataset[T any] struct {
-	store            store.Store
-	codec            Codec[T]
-	root             string
-	partitionColumns []string
-	fileName         string
-	writeMode        WriteMode
-	compactionPolicy CompactionPolicy[T]
-	compactionMu     sync.Mutex
-	compacting       map[string]struct{}
+	store                         store.Store
+	codec                         Codec[T]
+	root                          string
+	partitionColumns              []string
+	fileName                      string
+	writeMode                     WriteMode
+	compactionPolicy              CompactionPolicy[T]
+	compactionMu                  sync.Mutex
+	compacting                    map[string]struct{}
+	beforeCompactionInputDeletion func(context.Context, CompactResult) error
 }
 
 // NewWithCompactionPolicy creates a typed Parquet dataset with ordered,
@@ -124,6 +128,7 @@ func NewWithCompactionPolicy[T any](c *client.Client, codec Codec[T], params Par
 // New creates a typed Parquet dataset.
 //
 // Version:
+//   - 2026-11-02: Compose an optional predelete compaction publication hook.
 //   - 2026-08-14: Added.
 func New[T any](c *client.Client, codec Codec[T], params Params) (*Dataset[T], error) {
 	if c == nil {
@@ -149,13 +154,14 @@ func New[T any](c *client.Client, codec Codec[T], params Params) (*Dataset[T], e
 	}
 
 	return &Dataset[T]{
-		store:            c.Store(),
-		codec:            codec,
-		root:             root,
-		partitionColumns: columns,
-		fileName:         fileName,
-		writeMode:        params.WriteMode,
-		compacting:       make(map[string]struct{}),
+		store:                         c.Store(),
+		codec:                         codec,
+		root:                          root,
+		partitionColumns:              columns,
+		fileName:                      fileName,
+		writeMode:                     params.WriteMode,
+		compacting:                    make(map[string]struct{}),
+		beforeCompactionInputDeletion: params.BeforeCompactionInputDeletion,
 	}, nil
 }
 
